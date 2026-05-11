@@ -1,0 +1,11 @@
+{
+  "expo": {
+    "name": "CollabStream",
+    "slug": "collabstream",
+    "scheme": "collabstream",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "platforms": ["ios", "android"],
+    "plugins": ["expo-notifications"]
+  }
+}

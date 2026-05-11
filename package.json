@@ -1,0 +1,22 @@
+{
+  "name": "collab-stream",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/web",
+    "apps/server",
+    "apps/companion"
+  ],
+  "scripts": {
+    "dev": "node scripts/sync-ngrok.js && concurrently --names \"server,web\" --prefix-colors \"cyan,green\" \"npm run dev --workspace=apps/server\" \"npm run dev --workspace=apps/web\"",
+    "dev:all": "node scripts/sync-ngrok.js && concurrently --names \"server,web,companion\" --prefix-colors \"cyan,green,magenta\" \"npm run dev --workspace=apps/server\" \"npm run dev --workspace=apps/web\" \"npm run dev --workspace=apps/companion\"",
+    "build": "npm run build --workspace=apps/web",
+    "start:server": "npm run start --workspace=apps/server",
+    "sync-ngrok": "node scripts/sync-ngrok.js",
+    "deploy:all": "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1",
+    "tunnel": "node scripts/tunnel.js"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
