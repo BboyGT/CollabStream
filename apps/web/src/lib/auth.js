@@ -1,5 +1,19 @@
 import { supabase } from './supabase.js'
 
+const ADMIN_TOKEN_KEY = 'collabstream_admin_token'
+
+export function getAdminToken() {
+  if (typeof window === 'undefined') return ''
+  return window.localStorage.getItem(ADMIN_TOKEN_KEY) || ''
+}
+
+export function setAdminToken(token) {
+  if (typeof window === 'undefined') return
+  const value = String(token || '').trim()
+  if (value) window.localStorage.setItem(ADMIN_TOKEN_KEY, value)
+  else window.localStorage.removeItem(ADMIN_TOKEN_KEY)
+}
+
 export async function getSession() {
   return supabase.auth.getSession()
 }
@@ -30,5 +44,25 @@ export async function getUserPlan() {
     return data.plan || 'free'
   } catch {
     return 'free'
+  }
+}
+
+export async function getAuthStatus() {
+  const token = await getToken()
+  if (!token) return { enabled: false, provider: 'none' }
+  try {
+    const res = await fetch('/auth/status', {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!res.ok) return { enabled: false, provider: 'none' }
+    const data = await res.json()
+    return {
+      enabled: true,
+      provider: 'supabase',
+      user: data.user || null,
+      plan: data.plan || 'free',
+    }
+  } catch {
+    return { enabled: false, provider: 'none' }
   }
 }
