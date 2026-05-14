@@ -1,12 +1,16 @@
 const { createClient } = require('@supabase/supabase-js')
 
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  console.warn('[supabase] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY not set — Supabase features will be unavailable')
+function requireEnv(name) {
+  const value = process.env[name]
+  if (!value) {
+    throw new Error(`[supabase] Missing required environment variable: ${name}`)
+  }
+  return value
 }
 
 const supabase = createClient(
-  process.env.SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+  requireEnv('SUPABASE_URL'),
+  requireEnv('SUPABASE_SERVICE_ROLE_KEY')
 )
 
 module.exports = { supabase }
