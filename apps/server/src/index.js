@@ -2,7 +2,9 @@
 console.log('CollabStream signaling server — built by Godstime Aburu (BboyGT)')
 const express = require('express')
 const cors = require('cors')
+const dns = require('dns').promises
 const http = require('http')
+const net = require('net')
 const os = require('os')
 const multer = require('multer')
 const { WebSocketServer } = require('ws')
@@ -120,6 +122,52 @@ const PLAN_LIMITS = {
   business: { maxGuests: 20, durationMinutes: null },
 }
 
+function isPrivateIp(address) {
+  if (net.isIPv4(address)) {
+    const parts = address.split('.').map(Number)
+    return (
+      parts[0] === 10 ||
+      parts[0] === 127 ||
+      (parts[0] === 169 && parts[1] === 254) ||
+      (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) ||
+      (parts[0] === 192 && parts[1] === 168) ||
+      (parts[0] === 0)
+    )
+  }
+
+  if (net.isIPv6(address)) {
+    const normalized = address.toLowerCase()
+    return (
+      normalized === '::1' ||
+      normalized.startsWith('fc') ||
+      normalized.startsWith('fd') ||
+      normalized.startsWith('fe80:')
+    )
+  }
+
+  return true
+}
+
+async function validateWebhookUrl(rawUrl) {
+  let parsed
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    throw new Error('invalid webhook url')
+  }
+
+  if (parsed.protocol !== 'https:') {
+    throw new Error('webhook url must use https')
+  }
+
+  const records = await dns.lookup(parsed.hostname, { all: true })
+  if (!records.length || records.some((record) => isPrivateIp(record.address))) {
+    throw new Error('webhook url resolves to a private address')
+  }
+
+  return parsed.toString()
+}
+
 async function requireAuth(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '').trim()
   if (!token) return res.status(401).json({ error: 'Not authenticated' })
@@ -150,14 +198,22 @@ async function fireWebhook(hostId, event, payload) {
       .from('webhooks').select('url').eq('host_id', hostId)
       .eq('active', true).contains('events', [event])
     if (!hooks?.length) return
-    await Promise.allSettled(hooks.map((h) =>
-      fetch(h.url, {
+    const results = await Promise.allSettled(hooks.map(async (h) => {
+      const url = await validateWebhookUrl(h.url)
+      return fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-CollabStream-Event': event },
         body: JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload }),
-      }).catch(() => {})
-    ))
-  } catch {}
+      })
+    }))
+    results.forEach((result) => {
+      if (result.status === 'rejected') {
+        console.warn('[webhook] delivery failed:', result.reason?.message || result.reason)
+      }
+    })
+  } catch (err) {
+    console.warn('[webhook] delivery skipped:', err.message)
+  }
 }
 
 // ── Utility ────────────────────────────────────────────────────────────────────
