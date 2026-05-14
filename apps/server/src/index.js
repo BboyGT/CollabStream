@@ -21,7 +21,21 @@ const { supabase } = require('./supabase')
 const { stripe } = require('./stripe')
 const { uploadRecording, getRecordingUrl, uploadLogo } = require('./r2')
 
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 500 * 1024 * 1024 } })
+function megabytes(value, fallback) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
+const recordingUploadLimitMb = megabytes(process.env.MAX_RECORDING_UPLOAD_MB, 100)
+const logoUploadLimitMb = megabytes(process.env.MAX_LOGO_UPLOAD_MB, 2)
+const recordingUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: recordingUploadLimitMb * 1024 * 1024 },
+})
+const logoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: logoUploadLimitMb * 1024 * 1024 },
+})
 const nanoid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 21)
 const tokenid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 32)
 
@@ -311,7 +325,7 @@ app.get('/api/sessions/:sessionId/audit', requireAuth, async (req, res) => {
 })
 
 // ── Cloud recording (Business plan) ───────────────────────────────────────────
-app.post('/api/sessions/:sessionId/recording', requireAuth, upload.single('file'), async (req, res) => {
+app.post('/api/sessions/:sessionId/recording', requireAuth, recordingUpload.single('file'), async (req, res) => {
   if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
   if (!req.file) return res.status(400).json({ error: 'No file provided' })
   try {
@@ -348,7 +362,7 @@ app.get('/user/branding', requireAuth, async (req, res) => {
   res.json({ logoUrl, accentColor: profile?.accent_color || '#22d3ee' })
 })
 
-app.patch('/user/branding', requireAuth, upload.single('logo'), async (req, res) => {
+app.patch('/user/branding', requireAuth, logoUpload.single('logo'), async (req, res) => {
   if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
   const updates = {}
   if (req.body?.accentColor) updates.accent_color = req.body.accentColor
