@@ -439,17 +439,29 @@ app.delete('/api/whiteboards/:id', requireAuth, async (req, res) => {
 })
 
 // ── Admin ──────────────────────────────────────────────────────────────────────
+function requireAdminToken(req, res) {
+  const expectedToken = process.env.ADMIN_TOKEN
+  if (!expectedToken) {
+    res.status(503).json({ error: 'admin-disabled' })
+    return false
+  }
+  const token = String(req.query.token || '')
+  if (token !== expectedToken) {
+    res.status(403).json({ error: 'forbidden' })
+    return false
+  }
+  return true
+}
+
 app.get('/admin/sessions', async (req, res) => {
-  const token = req.query.token || ''
-  if (token !== (process.env.ADMIN_TOKEN || 'admin')) return res.status(403).json({ error: 'forbidden' })
+  if (!requireAdminToken(req, res)) return
   const limit = Math.min(Number(req.query.limit || 50), 200)
   const sessions = await listSessionHistory(null, limit)
   res.json({ sessions })
 })
 
 app.get('/admin/stats', async (req, res) => {
-  const token = req.query.token || ''
-  if (token !== (process.env.ADMIN_TOKEN || 'admin')) return res.status(403).json({ error: 'forbidden' })
+  if (!requireAdminToken(req, res)) return
   res.json(await getStats())
 })
 
