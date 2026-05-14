@@ -26,7 +26,31 @@ const nanoid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 21)
 const tokenid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 32)
 
 const app = express()
-app.use(cors())
+
+function parseAllowedOrigins(value = '') {
+  return value
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean)
+}
+
+const allowedOrigins = parseAllowedOrigins(
+  process.env.CORS_ORIGINS || process.env.PUBLIC_WEB_ORIGIN || ''
+)
+const localDevOrigin = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
+
+app.use(cors({
+  credentials: true,
+  origin(origin, callback) {
+    if (!origin) return callback(null, true)
+    const normalizedOrigin = origin.replace(/\/$/, '')
+    if (allowedOrigins.includes(normalizedOrigin)) return callback(null, true)
+    if (process.env.NODE_ENV !== 'production' && localDevOrigin.test(normalizedOrigin)) {
+      return callback(null, true)
+    }
+    return callback(null, false)
+  },
+}))
 
 // Webhook route must use raw body before express.json() is registered
 app.post('/billing/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
