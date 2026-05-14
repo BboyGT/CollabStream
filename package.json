@@ -17,6 +17,7 @@
     "tunnel": "node scripts/tunnel.js"
   },
   "devDependencies": {
+    "@ngrok/ngrok": "^1.7.0",
     "concurrently": "^8.2.2"
   }
 }

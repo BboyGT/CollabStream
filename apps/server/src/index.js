@@ -1,5 +1,4 @@
-// index.js — CollabStream signaling server
-console.log('CollabStream signaling server — built by Godstime Aburu (BboyGT)')
+console.log('CollabStream signaling server - built by Godstime Aburu')
 const express = require('express')
 const cors = require('cors')
 const dns = require('dns').promises
@@ -80,6 +79,8 @@ app.use(cors({
 
 // Webhook route must use raw body before express.json() is registered
 app.post('/billing/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'billing-not-configured' })
+  if (!supabase) return res.status(503).json({ error: 'supabase-not-configured' })
   const sig = req.headers['stripe-signature']
   if (!sig || !process.env.STRIPE_WEBHOOK_SECRET) {
     return res.status(400).json({ error: 'Missing signature or webhook secret' })
@@ -201,6 +202,7 @@ async function validateWebhookUrl(rawUrl) {
 }
 
 async function requireAuth(req, res, next) {
+  if (!supabase) return res.status(503).json({ error: 'supabase-not-configured' })
   const token = req.headers.authorization?.replace('Bearer ', '').trim()
   if (!token) return res.status(401).json({ error: 'Not authenticated' })
   const { data: { user }, error } = await supabase.auth.getUser(token)
@@ -224,7 +226,7 @@ async function requirePlan(plan) {
 
 // ── Webhook helper ─────────────────────────────────────────────────────────────
 async function fireWebhook(hostId, event, payload) {
-  if (!hostId) return
+  if (!hostId || !supabase) return
   try {
     const { data: hooks } = await supabase
       .from('webhooks').select('url').eq('host_id', hostId)
@@ -274,6 +276,7 @@ app.get('/public-host', (_req, res) => {
 
 // GET /auth/status — verify bearer token, return user + plan
 app.get('/auth/status', async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'supabase-not-configured' })
   const token = req.headers.authorization?.replace('Bearer ', '').trim()
   if (!token) return res.status(401).json({ error: 'Not authenticated' })
   const { data: { user }, error } = await supabase.auth.getUser(token)
@@ -342,6 +345,7 @@ app.get('/session/:sessionId', async (req, res) => {
 app.get('/session/:sessionId/branding', async (req, res) => {
   const room = getRoom(req.params.sessionId)
   if (!room) return res.status(404).json({ error: 'not-found' })
+  if (!supabase) return res.json({ logoUrl: null, accentColor: '#22d3ee' })
   // Look up host profile from Supabase sessions table
   const { data: sess } = await supabase.from('sessions').select('host_id').eq('id', req.params.sessionId).single()
   if (!sess?.host_id) return res.json({ logoUrl: null, accentColor: '#22d3ee' })
@@ -408,6 +412,12 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
 })
 
 app.get('/api/sessions/:sessionId/audit', requireAuth, async (req, res) => {
+  const { data: sess } = await supabase
+    .from('sessions')
+    .select('host_id')
+    .eq('id', req.params.sessionId)
+    .single()
+  if (!sess || sess.host_id !== req.user.id) return res.status(404).json({ error: 'not-found' })
   const events = await getAuditTrail(req.params.sessionId)
   res.json({ events })
 })
@@ -416,6 +426,7 @@ app.get('/api/sessions/:sessionId/audit', requireAuth, async (req, res) => {
 app.post('/api/sessions/:sessionId/recording', requireAuth, recordingUpload.single('file'), async (req, res) => {
   if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
   if (!req.file) return res.status(400).json({ error: 'No file provided' })
+  if (!/^video\/webm\b/.test(req.file.mimetype || '')) return res.status(415).json({ error: 'recording must be video/webm' })
   try {
     const key = await uploadRecording(req.params.sessionId, req.file.buffer, req.file.mimetype)
     await setRecordingUrl(req.params.sessionId, key)
@@ -455,6 +466,9 @@ app.patch('/user/branding', requireAuth, logoUpload.single('logo'), async (req, 
   const updates = {}
   if (req.body?.accentColor) updates.accent_color = req.body.accentColor
   if (req.file) {
+    if (!/^image\/(png|jpeg|webp|gif|svg\+xml)\b/.test(req.file.mimetype || '')) {
+      return res.status(415).json({ error: 'logo must be an image file' })
+    }
     try {
       const key = await uploadLogo(req.user.id, req.file.buffer, req.file.mimetype)
       updates.logo_url = key
@@ -473,6 +487,7 @@ app.patch('/user/branding', requireAuth, logoUpload.single('logo'), async (req, 
 
 // ── Billing ────────────────────────────────────────────────────────────────────
 app.post('/billing/checkout', requireAuth, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'billing-not-configured' })
   const { priceId, successUrl, cancelUrl } = req.body || {}
   if (!priceId) return res.status(400).json({ error: 'priceId required' })
   try {
@@ -492,6 +507,7 @@ app.post('/billing/checkout', requireAuth, async (req, res) => {
 })
 
 app.post('/billing/portal', requireAuth, async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'billing-not-configured' })
   const { returnUrl } = req.body || {}
   const customerId = req.profile?.stripe_customer_id
   if (!customerId) return res.status(400).json({ error: 'No Stripe customer' })

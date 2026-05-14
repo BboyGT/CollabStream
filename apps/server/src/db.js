@@ -4,6 +4,7 @@
 const { supabase } = require('./supabase')
 
 async function createSessionRecord(sessionId, hostId, opts = {}) {
+  if (!supabase) return
   const { sessionName, joinCode, shortCode, joinMode, maxGuests, durationMinutes } = opts
   const { error } = await supabase.from('sessions').insert({
     id: sessionId,
@@ -20,6 +21,7 @@ async function createSessionRecord(sessionId, hostId, opts = {}) {
 }
 
 async function endSessionRecord(sessionId, peakGuests = 0) {
+  if (!supabase) return
   const { error } = await supabase
     .from('sessions')
     .update({ ended_at: new Date().toISOString(), peak_guests: peakGuests, status: 'ended' })
@@ -28,6 +30,7 @@ async function endSessionRecord(sessionId, peakGuests = 0) {
 }
 
 async function addAuditEvent(sessionId, eventType, payload = {}) {
+  if (!supabase) return
   const { error } = await supabase.from('audit_events').insert({
     session_id: sessionId,
     event_type: eventType,
@@ -37,17 +40,22 @@ async function addAuditEvent(sessionId, eventType, payload = {}) {
 }
 
 async function listSessionHistory(hostId, limit = 20) {
-  const { data, error } = await supabase
+  if (!supabase) return []
+  let query = supabase
     .from('sessions')
     .select('*')
-    .eq('host_id', hostId)
     .order('started_at', { ascending: false })
     .limit(limit)
+
+  query = hostId ? query.eq('host_id', hostId) : query
+
+  const { data, error } = await query
   if (error) console.error('[db] listSessionHistory error:', error.message)
   return data || []
 }
 
 async function getAuditTrail(sessionId) {
+  if (!supabase) return []
   const { data, error } = await supabase
     .from('audit_events')
     .select('*')
@@ -58,6 +66,9 @@ async function getAuditTrail(sessionId) {
 }
 
 async function getDashboardStats(hostId) {
+  if (!supabase) {
+    return { totalSessions: 0, totalGuests: 0, totalMinutes: 0, recordingsSaved: 0 }
+  }
   const { data: sessions, error } = await supabase
     .from('sessions')
     .select('id, peak_guests, started_at, ended_at, recording_url, duration_minutes')
@@ -77,6 +88,7 @@ async function getDashboardStats(hostId) {
 }
 
 async function pruneOldData(retentionDays = 30) {
+  if (!supabase) return
   const cutoff = new Date(Date.now() - retentionDays * 86400 * 1000).toISOString()
   const { error } = await supabase
     .from('sessions')
@@ -87,11 +99,13 @@ async function pruneOldData(retentionDays = 30) {
 }
 
 async function getStats() {
+  if (!supabase) return { totalSessions: 0 }
   const { count } = await supabase.from('sessions').select('id', { count: 'exact', head: true })
   return { totalSessions: count || 0 }
 }
 
 async function setRecordingUrl(sessionId, key) {
+  if (!supabase) return
   const { error } = await supabase
     .from('sessions')
     .update({ recording_url: key })

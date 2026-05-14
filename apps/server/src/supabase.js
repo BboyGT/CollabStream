@@ -1,16 +1,13 @@
 const { createClient } = require('@supabase/supabase-js')
 
-function requireEnv(name) {
-  const value = process.env[name]
-  if (!value) {
-    throw new Error(`[supabase] Missing required environment variable: ${name}`)
-  }
-  return value
+const hasSupabaseEnv = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY)
+
+if (!hasSupabaseEnv) {
+  console.warn('[supabase] SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing - auth and persistence routes will be unavailable')
 }
 
-const supabase = createClient(
-  requireEnv('SUPABASE_URL'),
-  requireEnv('SUPABASE_SERVICE_ROLE_KEY')
-)
+const supabase = hasSupabaseEnv
+  ? createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+  : null
 
-module.exports = { supabase }
+module.exports = { supabase, hasSupabaseEnv }

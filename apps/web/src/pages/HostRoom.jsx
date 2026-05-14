@@ -214,7 +214,7 @@ export default function HostRoom() {
     setAnnotationColor, setAnnotationSize, setAnnotationTool,
     setControlGranted, setControlToken, setMode, setPeerConnected,
     peerConnected, signalingConnected, peerLeft, setPeerLeft, guestCount,
-    mode,
+    mode, branding, userPlan,
   } = useSession()
 
   // Fix 5: beforeunload reload guard
@@ -627,12 +627,30 @@ export default function HostRoom() {
     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9,opus' })
     recorderRef.current = recorder
     recorder.ondataavailable = (e) => { if (e.data?.size > 0) recordChunksRef.current.push(e.data) }
-    recorder.onstop = () => {
+    recorder.onstop = async () => {
       const blob = new Blob(recordChunksRef.current, { type: 'video/webm' })
+      // Always trigger local download
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url
       a.download = `collabstream-${Date.now()}.webm`; a.click()
       URL.revokeObjectURL(url); audioCtxRef.current?.close?.()
+      // Phase E: cloud upload for Business plan
+      if (userPlan === 'business') {
+        try {
+          const { getToken } = await import('../lib/auth.js')
+          const token = await getToken()
+          const form = new FormData()
+          form.append('file', blob, 'recording.webm')
+          const res = await fetch(`/api/sessions/${sessionId}/recording`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${token}` },
+            body: form,
+          })
+          if (res.ok) {
+            addJoinToast('Recording saved to cloud')
+          }
+        } catch {}
+      }
     }
     recorder.start(1000); setRecording(true)
   }
@@ -773,7 +791,12 @@ export default function HostRoom() {
             <div className="w-6 h-6 rounded-md bg-cyan-500 flex items-center justify-center shadow-[0_0_16px_rgba(34,211,238,0.35)] flex-shrink-0">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
             </div>
-            <span className="font-mono text-xs text-slate-300 tracking-widest whitespace-nowrap">{sessionName || 'CollabStream'}</span>
+            <span className="font-mono text-xs text-slate-300 tracking-widest whitespace-nowrap">
+              {branding?.logoUrl
+                ? <img src={branding.logoUrl} alt="logo" style={{ height: 22, display: 'inline-block', verticalAlign: 'middle' }} />
+                : (sessionName || 'CollabStream')
+              }
+            </span>
             <span className="w-px h-4 bg-slate-800 flex-shrink-0" />
             <span className="font-mono text-xs text-slate-500 whitespace-nowrap">{sessionId?.slice(0, 8)}&hellip;</span>
             {sessionStartRef.current && (
