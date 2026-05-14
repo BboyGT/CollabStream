@@ -23,13 +23,13 @@ const { supabase } = require('./supabase')
 const { stripe } = require('./stripe')
 const { uploadRecording, getRecordingUrl, uploadLogo } = require('./r2')
 
-function megabytes(value, fallback) {
+function positiveNumber(value, fallback) {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
-const recordingUploadLimitMb = megabytes(process.env.MAX_RECORDING_UPLOAD_MB, 100)
-const logoUploadLimitMb = megabytes(process.env.MAX_LOGO_UPLOAD_MB, 2)
+const recordingUploadLimitMb = positiveNumber(process.env.MAX_RECORDING_UPLOAD_MB, 100)
+const logoUploadLimitMb = positiveNumber(process.env.MAX_LOGO_UPLOAD_MB, 2)
 const recordingUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: recordingUploadLimitMb * 1024 * 1024 },
@@ -38,6 +38,16 @@ const logoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: logoUploadLimitMb * 1024 * 1024 },
 })
+const rateLimitWindowMs = positiveNumber(process.env.RATE_LIMIT_WINDOW_MS, 60_000)
+const rateLimitMax = positiveNumber(process.env.RATE_LIMIT_MAX, 120)
+const rateLimitBuckets = new Map()
+const rateLimitCleanup = setInterval(() => {
+  const now = Date.now()
+  for (const [key, bucket] of rateLimitBuckets.entries()) {
+    if (bucket.resetAt <= now) rateLimitBuckets.delete(key)
+  }
+}, rateLimitWindowMs)
+rateLimitCleanup.unref?.()
 const nanoid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 21)
 const tokenid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 32)
 
@@ -114,6 +124,28 @@ app.post('/billing/webhook', express.raw({ type: 'application/json' }), async (r
 })
 
 app.use(express.json())
+
+function rateLimit(req, res, next) {
+  if (req.path === '/health') return next()
+  const now = Date.now()
+  const key = req.ip || req.socket.remoteAddress || 'unknown'
+  const bucket = rateLimitBuckets.get(key)
+
+  if (!bucket || bucket.resetAt <= now) {
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + rateLimitWindowMs })
+    return next()
+  }
+
+  bucket.count += 1
+  if (bucket.count > rateLimitMax) {
+    res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000))
+    return res.status(429).json({ error: 'rate-limit' })
+  }
+
+  return next()
+}
+
+app.use(rateLimit)
 
 // ── Auth middleware ────────────────────────────────────────────────────────────
 const PLAN_LIMITS = {
