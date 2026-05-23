@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node scripts/sync-ngrok.js && concurrently --names \"server,web\" --prefix-colors \"cyan,green\" \"npm run dev --workspace=apps/server\" \"npm run dev --workspace=apps/web\"",
     "dev:all": "node scripts/sync-ngrok.js && concurrently --names \"server,web,companion\" --prefix-colors \"cyan,green,magenta\" \"npm run dev --workspace=apps/server\" \"npm run dev --workspace=apps/web\" \"npm run dev --workspace=apps/companion\"",
+    "dev:public": "concurrently --names \"tunnel,server,web\" --prefix-colors \"magenta,cyan,green\" \"node scripts/tunnel.js\" \"npm run dev --workspace=apps/server\" \"npm run dev --workspace=apps/web\"",
     "build": "npm run build --workspace=apps/web",
     "start:server": "npm run start --workspace=apps/server",
     "sync-ngrok": "node scripts/sync-ngrok.js",
