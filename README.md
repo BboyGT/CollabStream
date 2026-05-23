@@ -62,15 +62,12 @@ Server env includes Supabase service role credentials, Stripe secret keys, Strip
 
 ## Supabase Database
 
-Apply the migration in `supabase/migrations/20260514000000_monetization_schema.sql` to create:
+CollabStream uses Supabase for authentication and persistence, but production database
+migrations and deployment runbooks are intentionally not included in this public repo.
+Create your own Supabase project and schema that matches the app behavior you want to run.
 
-- profiles
-- sessions
-- audit_events
-- whiteboards
-- webhooks
-
-The migration enables RLS and adds owner policies for authenticated users. Server routes use the service role key.
+Server routes must use a private service role key. Never expose the service role key,
+Stripe secrets, webhook secrets, R2 secrets, or admin tokens in client code or commits.
 
 ## Companion App
 
@@ -112,6 +109,6 @@ collab-stream/
     companion/    Tauri desktop companion
     mobile/       Expo mobile app
   scripts/        ngrok, deploy, and helper scripts
-  supabase/       local Supabase config and migrations
+  supabase/       local Supabase config only; private migrations are not shipped
   package.json    npm workspace root
 ```
