@@ -15,10 +15,10 @@ function useInView(threshold = 0.15) {
   return [ref, visible]
 }
 
-function Section({ children, className = '' }) {
+function Section({ children, className = '', ...props }) {
   const [ref, visible] = useInView()
   return (
-    <section ref={ref} className={`section-anim${visible ? ' visible' : ''} ${className}`}>
+    <section ref={ref} className={`section-anim${visible ? ' visible' : ''} ${className}`} {...props}>
       {children}
     </section>
   )
