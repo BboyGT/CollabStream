@@ -13,7 +13,6 @@
     "build": "npm run build --workspace=apps/web",
     "start:server": "npm run start --workspace=apps/server",
     "sync-ngrok": "node scripts/sync-ngrok.js",
-    "deploy:all": "powershell -ExecutionPolicy Bypass -File scripts/deploy.ps1",
     "tunnel": "node scripts/tunnel.js"
   },
   "devDependencies": {
