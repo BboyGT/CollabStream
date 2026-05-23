@@ -1,3 +1,5 @@
+require('dotenv').config()
+
 console.log('CollabStream signaling server - built by Godstime Aburu')
 const express = require('express')
 const cors = require('cors')
