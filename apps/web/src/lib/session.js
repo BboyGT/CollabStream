@@ -44,8 +44,8 @@ export async function resolveJoinCode(code) {
   return res.json()
 }
 
-export async function guestJoinUrl(origin, code) {
-  return `${origin}/room/${code}`
+export function guestJoinUrl(origin, code) {
+  return `${String(origin || '').replace(/\/$/, '')}/room/${encodeURIComponent(code || '')}`
 }
 
 export function hostUrl(sessionId) {
@@ -64,5 +64,5 @@ export function getPublicOrigin() {
 }
 
 export function guestJoinUrlSync(origin, joinCode) {
-  return `${origin.replace(/\/$/, '')}/room/${joinCode}`
+  return guestJoinUrl(origin, joinCode)
 }
