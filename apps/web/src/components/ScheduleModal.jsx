@@ -26,6 +26,8 @@ export default function ScheduleModal({ open, onClose, joinUrl, joinCode }) {
   const [when, setWhen] = useState(toLocalInputValue(new Date(Date.now() + 60 * 60 * 1000)))
   const [durationHours, setDurationHours] = useState(0)
   const [durationMins, setDurationMins] = useState(30)
+  const safeJoinUrl = typeof joinUrl === 'string' ? joinUrl : ''
+  const safeJoinCode = typeof joinCode === 'string' ? joinCode : ''
 
   useEffect(() => {
     if (!open) return
@@ -39,8 +41,8 @@ export default function ScheduleModal({ open, onClose, joinUrl, joinCode }) {
   // Auto-include join code and link in description
   const fullDescription = [
     notes,
-    joinCode ? `Join code: ${joinCode}` : '',
-    joinUrl ? `Link: ${joinUrl}` : '',
+    safeJoinCode ? `Join code: ${safeJoinCode}` : '',
+    safeJoinUrl ? `Link: ${safeJoinUrl}` : '',
   ].filter(Boolean).join('\n')
 
   function handleSave() {
@@ -49,7 +51,7 @@ export default function ScheduleModal({ open, onClose, joinUrl, joinCode }) {
       description: fullDescription,
       start: startDate,
       durationMinutes: totalMinutes || 30,
-      url: joinUrl,
+      url: safeJoinUrl,
     })
     const blob = new Blob([ics], { type: 'text/calendar' })
     const url = URL.createObjectURL(blob)
@@ -120,10 +122,10 @@ export default function ScheduleModal({ open, onClose, joinUrl, joinCode }) {
             <textarea value={notes} onChange={(e) => setNotes(e.target.value)}
               className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 h-16 outline-none focus:border-cyan-600" />
           </div>
-          {(joinCode || joinUrl) && (
+          {(safeJoinCode || safeJoinUrl) && (
             <div className="text-[10px] text-slate-500 font-mono bg-slate-900/60 rounded-lg px-3 py-2">
-              {joinCode && <div>Join code: <span className="text-slate-300">{joinCode}</span></div>}
-              {joinUrl && <div className="mt-0.5 break-all">Link: <span className="text-slate-300">{joinUrl}</span></div>}
+              {safeJoinCode && <div>Join code: <span className="text-slate-300">{safeJoinCode}</span></div>}
+              {safeJoinUrl && <div className="mt-0.5 break-all">Link: <span className="text-slate-300">{safeJoinUrl}</span></div>}
               <div className="text-slate-600 mt-0.5">These will be included in the invite.</div>
             </div>
           )}

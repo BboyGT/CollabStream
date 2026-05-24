@@ -285,8 +285,9 @@ export default function HostRoom() {
 
   useEffect(() => {
     getPublicOrigin().then((origin) => {
-      setPublicOrigin(origin)
-      if (origin.includes('ngrok') || origin.includes('ngrok-free')) {
+      const safeOrigin = typeof origin === 'string' && origin ? origin.replace(/\/$/, '') : window.location.origin
+      setPublicOrigin(safeOrigin)
+      if (safeOrigin.includes('ngrok') || safeOrigin.includes('ngrok-free')) {
         fetch('/public-host').then((r) => r.json()).then((d) => { if (d?.origin) setLanOrigin(d.origin.replace(/\/$/, '')) }).catch(() => {})
       }
     }).catch(() => {})
