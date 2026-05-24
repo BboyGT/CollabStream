@@ -5,10 +5,12 @@ export default function InviteModal({ open, onClose, joinCode, shortCode, joinUr
   const [qr, setQr] = useState(null)
   const [lanQr, setLanQr] = useState(null)
   const [ngrokTip, setNgrokTip] = useState(false)
+  const safeJoinUrl = typeof joinUrl === 'string' ? joinUrl : ''
+  const safeLanUrl = typeof lanUrl === 'string' ? lanUrl : ''
 
-  const isLocal = joinUrl?.includes('localhost') || joinUrl?.includes('127.0.0.1')
-  const isNgrok = !isLocal && (joinUrl?.includes('ngrok') || joinUrl?.includes('ngrok-free'))
-  const hasLan = !!(lanUrl && lanUrl !== joinUrl)
+  const isLocal = safeJoinUrl.includes('localhost') || safeJoinUrl.includes('127.0.0.1')
+  const isNgrok = !isLocal && (safeJoinUrl.includes('ngrok') || safeJoinUrl.includes('ngrok-free'))
+  const hasLan = !!(safeLanUrl && safeLanUrl !== safeJoinUrl)
 
   const [qrMode, setQrMode] = useState(() => (isNgrok ? 'ngrok' : 'lan'))
 
@@ -19,23 +21,23 @@ export default function InviteModal({ open, onClose, joinCode, shortCode, joinUr
   }, [open, isNgrok])
 
   useEffect(() => {
-    if (!open || !joinUrl) return
-    QRCode.toDataURL(joinUrl, { margin: 1, width: 220 })
+    if (!open || !safeJoinUrl) return
+    QRCode.toDataURL(safeJoinUrl, { margin: 1, width: 220 })
       .then(setQr)
       .catch(() => setQr(null))
-  }, [open, joinUrl])
+  }, [open, safeJoinUrl])
 
   useEffect(() => {
-    if (!open || !lanUrl || lanUrl === joinUrl) return
-    QRCode.toDataURL(lanUrl, { margin: 1, width: 220 })
+    if (!open || !safeLanUrl || safeLanUrl === safeJoinUrl) return
+    QRCode.toDataURL(safeLanUrl, { margin: 1, width: 220 })
       .then(setLanQr)
       .catch(() => setLanQr(null))
-  }, [open, lanUrl, joinUrl])
+  }, [open, safeLanUrl, safeJoinUrl])
 
   if (!open) return null
 
   const activeQr = qrMode === 'lan' ? lanQr : qr
-  const activeUrl = qrMode === 'lan' ? lanUrl : joinUrl
+  const activeUrl = qrMode === 'lan' ? safeLanUrl : safeJoinUrl
   const showToggle = isNgrok && hasLan
 
   return (
