@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { createSession, resolveJoinCode } from '../lib/session.js'
 import CreatorSignature from '../components/CreatorSignature.jsx'
-import { getUser, signOut } from '../lib/auth.js'
+import { getAuthStatus, getUser, signOut } from '../lib/auth.js'
 
 const JOIN_MODES = [
   { value: 'open', label: 'Open', desc: 'Anyone with the link joins instantly' },
@@ -11,26 +11,51 @@ const JOIN_MODES = [
 ]
 
 const GUEST_CAP_OPTIONS = [
-  { value: '', label: 'Unlimited' },
   { value: '2', label: '2 guests' },
+  { value: '3', label: '3 guests' },
   { value: '5', label: '5 guests' },
   { value: '10', label: '10 guests' },
   { value: '20', label: '20 guests' },
 ]
 
-function SessionSettingsModal({ open, onClose, onStart, loading }) {
+const PLAN_LIMITS = {
+  free: { maxGuests: 3, durationMinutes: 45 },
+  pro: { maxGuests: 10, durationMinutes: 480 },
+  business: { maxGuests: 20, durationMinutes: 480 },
+}
+
+function SessionSettingsModal({ open, onClose, onStart, loading, plan = 'free' }) {
   const [sessionName, setSessionName] = useState(() => localStorage.getItem('cs_session_name') || '')
-  const [maxGuests, setMaxGuests] = useState('')
+  const limits = PLAN_LIMITS[plan] || PLAN_LIMITS.free
+  const [maxGuests, setMaxGuests] = useState(String(limits.maxGuests))
   const [joinMode, setJoinMode] = useState('open')
-  const [durationHours, setDurationHours] = useState(2)
-  const [durationMins, setDurationMins] = useState(0)
+  const [durationHours, setDurationHours] = useState(plan === 'free' ? 0 : 2)
+  const [durationMins, setDurationMins] = useState(plan === 'free' ? 45 : 0)
   const [customCap, setCustomCap] = useState('')
   const [showCustomCap, setShowCustomCap] = useState(false)
   const totalMinutes = durationHours * 60 + durationMins
+  const capOptions = GUEST_CAP_OPTIONS.filter((o) => Number(o.value) <= limits.maxGuests)
+  const maxHours = Math.floor(limits.durationMinutes / 60)
+  const hourOptions = Array.from({ length: maxHours + 1 }, (_, i) => i)
+  const minuteOptions = plan === 'free' ? [15, 30, 45] : [0, 15, 30, 45]
+
+  useEffect(() => {
+    setMaxGuests(String(limits.maxGuests))
+    setCustomCap('')
+    setShowCustomCap(false)
+    setDurationHours(plan === 'free' ? 0 : 2)
+    setDurationMins(plan === 'free' ? 45 : 0)
+  }, [plan, limits.maxGuests])
 
   function handleStart() {
-    const cap = showCustomCap ? (Number(customCap) > 0 ? Number(customCap) : null) : (maxGuests ? Number(maxGuests) : null)
-    onStart({ sessionName: sessionName.trim(), maxGuests: cap, joinMode, durationMinutes: totalMinutes || 120 })
+    const requestedCap = showCustomCap ? Number(customCap) : Number(maxGuests)
+    const requestedDuration = totalMinutes || limits.durationMinutes
+    onStart({
+      sessionName: sessionName.trim(),
+      maxGuests: Math.min(requestedCap || limits.maxGuests, limits.maxGuests),
+      joinMode,
+      durationMinutes: Math.min(requestedDuration, limits.durationMinutes),
+    })
   }
 
   if (!open) return null
@@ -53,11 +78,11 @@ function SessionSettingsModal({ open, onClose, onStart, loading }) {
               <select value={showCustomCap ? 'custom' : maxGuests}
                 onChange={(e) => { if (e.target.value === 'custom') setShowCustomCap(true); else { setShowCustomCap(false); setMaxGuests(e.target.value) } }}
                 className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono outline-none">
-                {GUEST_CAP_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                {capOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 <option value="custom">Custom…</option>
               </select>
               {showCustomCap && (
-                <input type="number" min={1} max={20} value={customCap} onChange={(e) => setCustomCap(e.target.value)} placeholder="N"
+                <input type="number" min={1} max={limits.maxGuests} value={customCap} onChange={(e) => setCustomCap(e.target.value)} placeholder="N"
                   className="w-20 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono outline-none" />
               )}
             </div>
@@ -81,14 +106,14 @@ function SessionSettingsModal({ open, onClose, onStart, loading }) {
                 <span className="text-xs text-slate-500 font-mono">Hours</span>
                 <select value={durationHours} onChange={(e) => setDurationHours(Number(e.target.value))}
                   className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-xs text-slate-200 font-mono outline-none">
-                  {Array.from({ length: 9 }, (_, i) => <option key={i} value={i}>{i}</option>)}
+                  {hourOptions.map((h) => <option key={h} value={h}>{h}</option>)}
                 </select>
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="text-xs text-slate-500 font-mono">Minutes</span>
                 <select value={durationMins} onChange={(e) => setDurationMins(Number(e.target.value))}
                   className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-xs text-slate-200 font-mono outline-none">
-                  {[0, 15, 30, 45].map((m) => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
+                  {minuteOptions.map((m) => <option key={m} value={m}>{String(m).padStart(2, '0')}</option>)}
                 </select>
               </div>
               <span className="text-xs text-slate-500 font-mono">{totalMinutes >= 60 ? `${Math.floor(totalMinutes / 60)}h ` : ''}{totalMinutes % 60}m</span>
@@ -113,10 +138,16 @@ export default function AppLanding() {
   const [guestName, setGuestName] = useState(() => localStorage.getItem('cs_name') || '')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [userEmail, setUserEmail] = useState(null)
+  const [userPlan, setUserPlan] = useState('free')
   const navigate = useNavigate()
 
   useEffect(() => {
-    getUser().then((u) => { if (u) setUserEmail(u.email); else navigate('/auth') })
+    getUser().then(async (u) => {
+      if (!u) { navigate('/auth'); return }
+      setUserEmail(u.email)
+      const status = await getAuthStatus()
+      setUserPlan(status.plan || 'free')
+    })
   }, [navigate])
 
   useEffect(() => {
@@ -159,7 +190,7 @@ export default function AppLanding() {
 
   return (
     <div className="min-h-screen app-bg flex flex-col safe-area">
-      <SessionSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onStart={handleStart} loading={loading} />
+      <SessionSettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} onStart={handleStart} loading={loading} plan={userPlan} />
 
       <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
         <div style={{ position: 'absolute', width: 600, height: 600, borderRadius: '50%', background: 'radial-gradient(circle, rgba(34,211,238,0.08) 0%, transparent 70%)', top: -100, left: -150 }} />

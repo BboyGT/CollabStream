@@ -156,6 +156,11 @@ const PLAN_LIMITS = {
   pro:      { maxGuests: 10, durationMinutes: 480 },
   business: { maxGuests: 20, durationMinutes: null },
 }
+const PLAN_RANK = { free: 0, pro: 1, business: 2 }
+
+function hasPlan(actualPlan, requiredPlan) {
+  return (PLAN_RANK[actualPlan] ?? 0) >= (PLAN_RANK[requiredPlan] ?? 0)
+}
 
 function isPrivateIp(address) {
   if (net.isIPv4(address)) {
@@ -217,9 +222,9 @@ async function requireAuth(req, res, next) {
   next()
 }
 
-async function requirePlan(plan) {
+function requirePlan(plan) {
   return (req, res, next) => {
-    if (req.plan !== plan && !(plan === 'pro' && req.plan === 'business')) {
+    if (!hasPlan(req.plan, plan)) {
       return res.status(403).json({ error: `${plan} plan required` })
     }
     next()
@@ -316,6 +321,8 @@ app.post('/session', requireAuth, async (req, res) => {
   const opts = {
     sessionName: String(sessionName || '').slice(0, 40),
     maxGuests: effectiveMaxGuests,
+    maxGuestLimit: limits.maxGuests || 20,
+    hostPlan: req.plan,
     joinMode: ['open', 'approval', 'locked'].includes(joinMode) ? joinMode : 'open',
     durationMinutes: effectiveDuration,
   }
@@ -351,7 +358,8 @@ app.get('/session/:sessionId/branding', async (req, res) => {
   // Look up host profile from Supabase sessions table
   const { data: sess } = await supabase.from('sessions').select('host_id').eq('id', req.params.sessionId).single()
   if (!sess?.host_id) return res.json({ logoUrl: null, accentColor: '#22d3ee' })
-  const { data: profile } = await supabase.from('profiles').select('logo_url, accent_color').eq('id', sess.host_id).single()
+  const { data: profile } = await supabase.from('profiles').select('plan, logo_url, accent_color').eq('id', sess.host_id).single()
+  if (!hasPlan(profile?.plan || 'free', 'business')) return res.json({ logoUrl: null, accentColor: '#22d3ee' })
   let logoUrl = null
   if (profile?.logo_url) {
     try { logoUrl = await getRecordingUrl(profile.logo_url) } catch {}
@@ -398,12 +406,14 @@ app.patch('/session/:sessionId/cap', async (req, res) => {
 app.get('/session/:sessionId/audit', async (req, res) => {
   const token = req.query.token
   if (!verifyToken(req.params.sessionId, token)) return res.status(403).json({ error: 'invalid-token' })
+  const room = getRoom(req.params.sessionId)
+  if (!hasPlan(room?.hostPlan || 'free', 'pro')) return res.status(403).json({ error: 'pro plan required' })
   const events = await getAuditTrail(req.params.sessionId)
   res.json({ events })
 })
 
 // ── Dashboard ──────────────────────────────────────────────────────────────────
-app.get('/api/dashboard', requireAuth, async (req, res) => {
+app.get('/api/dashboard', requireAuth, requirePlan('pro'), async (req, res) => {
   const page = Math.max(0, parseInt(req.query.page || '0'))
   const limit = 10
   const stats = await getDashboardStats(req.user.id)
@@ -413,7 +423,7 @@ app.get('/api/dashboard', requireAuth, async (req, res) => {
   res.json({ stats, sessions: paged, totalPages, page })
 })
 
-app.get('/api/sessions/:sessionId/audit', requireAuth, async (req, res) => {
+app.get('/api/sessions/:sessionId/audit', requireAuth, requirePlan('pro'), async (req, res) => {
   const { data: sess } = await supabase
     .from('sessions')
     .select('host_id')
@@ -425,8 +435,7 @@ app.get('/api/sessions/:sessionId/audit', requireAuth, async (req, res) => {
 })
 
 // ── Cloud recording (Business plan) ───────────────────────────────────────────
-app.post('/api/sessions/:sessionId/recording', requireAuth, recordingUpload.single('file'), async (req, res) => {
-  if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
+app.post('/api/sessions/:sessionId/recording', requireAuth, requirePlan('business'), recordingUpload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file provided' })
   if (!/^video\/webm\b/.test(req.file.mimetype || '')) return res.status(415).json({ error: 'recording must be video/webm' })
   try {
@@ -442,7 +451,7 @@ app.post('/api/sessions/:sessionId/recording', requireAuth, recordingUpload.sing
   }
 })
 
-app.get('/api/sessions/:sessionId/recording', requireAuth, async (req, res) => {
+app.get('/api/sessions/:sessionId/recording', requireAuth, requirePlan('business'), async (req, res) => {
   const { data: sess } = await supabase.from('sessions').select('recording_url').eq('id', req.params.sessionId).single()
   if (!sess?.recording_url) return res.status(404).json({ error: 'No recording' })
   try {
@@ -455,6 +464,7 @@ app.get('/api/sessions/:sessionId/recording', requireAuth, async (req, res) => {
 
 // ── Branding (Business plan) ───────────────────────────────────────────────────
 app.get('/user/branding', requireAuth, async (req, res) => {
+  if (!hasPlan(req.plan, 'business')) return res.json({ logoUrl: null, accentColor: '#22d3ee' })
   const profile = req.profile
   let logoUrl = null
   if (profile?.logo_url) {
@@ -463,8 +473,7 @@ app.get('/user/branding', requireAuth, async (req, res) => {
   res.json({ logoUrl, accentColor: profile?.accent_color || '#22d3ee' })
 })
 
-app.patch('/user/branding', requireAuth, logoUpload.single('logo'), async (req, res) => {
-  if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
+app.patch('/user/branding', requireAuth, requirePlan('business'), logoUpload.single('logo'), async (req, res) => {
   const updates = {}
   if (req.body?.accentColor) updates.accent_color = req.body.accentColor
   if (req.file) {
@@ -526,14 +535,12 @@ app.post('/billing/portal', requireAuth, async (req, res) => {
 })
 
 // ── Webhooks CRUD ──────────────────────────────────────────────────────────────
-app.get('/api/webhooks', requireAuth, async (req, res) => {
-  if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
+app.get('/api/webhooks', requireAuth, requirePlan('business'), async (req, res) => {
   const { data } = await supabase.from('webhooks').select('*').eq('host_id', req.user.id)
   res.json({ webhooks: data || [] })
 })
 
-app.post('/api/webhooks', requireAuth, async (req, res) => {
-  if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
+app.post('/api/webhooks', requireAuth, requirePlan('business'), async (req, res) => {
   const { url, events } = req.body || {}
   if (!url) return res.status(400).json({ error: 'url required' })
   const { data, error } = await supabase.from('webhooks').insert({ host_id: req.user.id, url, events: events || ['session.start', 'session.end', 'guest.join', 'recording.ready'] }).select().single()
@@ -541,21 +548,18 @@ app.post('/api/webhooks', requireAuth, async (req, res) => {
   res.json({ webhook: data })
 })
 
-app.delete('/api/webhooks/:id', requireAuth, async (req, res) => {
-  if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
+app.delete('/api/webhooks/:id', requireAuth, requirePlan('business'), async (req, res) => {
   await supabase.from('webhooks').delete().eq('id', req.params.id).eq('host_id', req.user.id)
   res.json({ ok: true })
 })
 
 // ── Persistent Whiteboards (Business plan) ─────────────────────────────────────
-app.get('/api/whiteboards', requireAuth, async (req, res) => {
-  if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
+app.get('/api/whiteboards', requireAuth, requirePlan('business'), async (req, res) => {
   const { data } = await supabase.from('whiteboards').select('id, name, updated_at').eq('host_id', req.user.id).order('updated_at', { ascending: false })
   res.json({ whiteboards: data || [] })
 })
 
-app.post('/api/whiteboards', requireAuth, async (req, res) => {
-  if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
+app.post('/api/whiteboards', requireAuth, requirePlan('business'), async (req, res) => {
   const { name } = req.body || {}
   if (!name) return res.status(400).json({ error: 'name required' })
   const { data, error } = await supabase.from('whiteboards').insert({ host_id: req.user.id, name, strokes: [] }).select().single()
@@ -563,21 +567,20 @@ app.post('/api/whiteboards', requireAuth, async (req, res) => {
   res.json({ whiteboard: data })
 })
 
-app.get('/api/whiteboards/:id', requireAuth, async (req, res) => {
+app.get('/api/whiteboards/:id', requireAuth, requirePlan('business'), async (req, res) => {
   const { data } = await supabase.from('whiteboards').select('*').eq('id', req.params.id).eq('host_id', req.user.id).single()
   if (!data) return res.status(404).json({ error: 'not-found' })
   res.json({ whiteboard: data })
 })
 
-app.patch('/api/whiteboards/:id', requireAuth, async (req, res) => {
-  if (req.plan !== 'business') return res.status(403).json({ error: 'business plan required' })
+app.patch('/api/whiteboards/:id', requireAuth, requirePlan('business'), async (req, res) => {
   const { strokes } = req.body || {}
   const { error } = await supabase.from('whiteboards').update({ strokes: strokes || [], updated_at: new Date().toISOString() }).eq('id', req.params.id).eq('host_id', req.user.id)
   if (error) return res.status(500).json({ error: error.message })
   res.json({ ok: true })
 })
 
-app.delete('/api/whiteboards/:id', requireAuth, async (req, res) => {
+app.delete('/api/whiteboards/:id', requireAuth, requirePlan('business'), async (req, res) => {
   await supabase.from('whiteboards').delete().eq('id', req.params.id).eq('host_id', req.user.id)
   res.json({ ok: true })
 })

@@ -618,6 +618,10 @@ export default function HostRoom() {
   }
 
   function handleRecord() {
+    if (userPlan === 'free') {
+      addJoinToast('Recording is a Pro feature')
+      return
+    }
     if (recording) { recorderRef.current?.stop(); setRecording(false); return }
     const videoSource = screenStream || localStream; if (!videoSource) return
     const mixedAudio = buildMixedAudioStream(Object.keys(guestStreams))
@@ -1008,9 +1012,9 @@ export default function HostRoom() {
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="m9 17 2-2 4-4-2-2-4 4-2 2h2zm7-9-2-2" /></svg>
                 {whiteboard ? 'Exit Whiteboard' : 'Whiteboard'}
               </button>
-              <button onClick={handleRecord} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-mono transition-all whitespace-nowrap ${recording ? 'bg-red-600/20 border-red-500 text-red-200' : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-slate-100'}`}>
+              <button onClick={handleRecord} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-mono transition-all whitespace-nowrap ${userPlan === 'free' ? 'bg-slate-950 border-slate-800 text-slate-600' : recording ? 'bg-red-600/20 border-red-500 text-red-200' : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-slate-100'}`}>
                 <svg width="14" height="14" viewBox="0 0 24 24" fill={recording ? '#ef4444' : 'none'} stroke={recording ? '#ef4444' : 'currentColor'} strokeWidth="2"><circle cx="12" cy="12" r="9" /></svg>
-                {recording ? 'Stop Rec' : 'Record'}
+                {userPlan === 'free' ? 'Record (Pro)' : recording ? 'Stop Rec' : 'Record'}
               </button>
               {flags.chat && (
                 <div className="relative flex-shrink-0">
@@ -1094,7 +1098,7 @@ export default function HostRoom() {
         <div className="absolute right-4 top-16 modal-enter bg-slate-950 border border-slate-800 rounded-xl p-3 z-50 shadow-xl">
           <div className="text-xs font-mono text-slate-400 mb-2">Set guest cap</div>
           <div className="flex flex-col gap-1">
-            {[null, 2, 5, 10, 20].map((n) => (
+            {[2, 3, 5, 10, 20].filter((n) => userPlan === 'business' || n <= (userPlan === 'pro' ? 10 : 3)).map((n) => (
               <button key={String(n)} onClick={() => updateCap(n)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-mono text-left ${maxGuests === n ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-200' : 'bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800'}`}>
                 {n === null ? 'Unlimited' : `${n} guests`}

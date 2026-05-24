@@ -59,6 +59,11 @@ export default function Dashboard() {
         setSessions(data.sessions || [])
         setTotalPages(data.totalPages || 1)
         setPage(data.page || 0)
+      } else if (dashRes.status === 403) {
+        setStats(null)
+        setSessions([])
+        setTotalPages(1)
+        setPage(0)
       }
     } catch (err) {
       setError('Could not load dashboard data.')
@@ -134,7 +139,7 @@ export default function Dashboard() {
         )}
 
         {/* Stats */}
-        {stats && (
+        {!isFree && stats && (
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-10">
             <StatCard label="Total sessions" value={stats.totalSessions} />
             <StatCard label="Total guests" value={stats.totalGuests} />
@@ -144,13 +149,24 @@ export default function Dashboard() {
         )}
 
         {/* Session list */}
-        <div className={`rounded-2xl border border-slate-800 overflow-hidden ${isFree ? 'relative' : ''}`}>
+        <div className={`rounded-2xl border border-slate-800 overflow-hidden ${isFree ? 'relative min-h-[220px]' : ''}`}>
           <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
             <span className="font-mono text-sm text-slate-300 font-semibold">Recent sessions</span>
             <span className="text-xs font-mono text-slate-500">{sessions.length} shown</span>
           </div>
 
-          {loading ? (
+          {isFree ? (
+            <div className="px-5 py-14 text-center">
+              <div className="text-cyan-200 font-mono text-sm font-semibold mb-2">Session history is locked on Free</div>
+              <div className="text-slate-500 font-mono text-xs mb-5">Upgrade to Pro to store sessions, download audit logs, and keep history.</div>
+              <button
+                onClick={() => navigate('/settings?upgrade=pro')}
+                className="px-5 py-2.5 bg-cyan-500 hover:bg-cyan-400 text-zinc-900 rounded-xl text-xs font-mono font-semibold whitespace-nowrap transition-all"
+              >
+                Upgrade to Pro
+              </button>
+            </div>
+          ) : loading ? (
             <div className="px-5 py-12 text-center text-slate-500 font-mono text-sm">Loading&hellip;</div>
           ) : error ? (
             <div className="px-5 py-12 text-center text-red-400 font-mono text-sm">{error}</div>
@@ -197,10 +213,6 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* Free plan blur overlay */}
-          {isFree && sessions.length > 3 && (
-            <div className="absolute bottom-0 left-0 right-0 h-32 bg-gradient-to-t from-zinc-950 to-transparent pointer-events-none" />
-          )}
         </div>
 
         {/* Pagination */}

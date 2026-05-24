@@ -29,6 +29,8 @@ function createRoom(sessionId, token, joinCode, shortCode, options = {}) {
     durationMinutes,
     sessionName: options.sessionName || '',
     maxGuests: options.maxGuests || null,   // null = unlimited
+    maxGuestLimit: options.maxGuestLimit || MAX_GUESTS_DEFAULT,
+    hostPlan: options.hostPlan || 'free',
     joinMode: options.joinMode || 'open',   // 'open' | 'approval' | 'locked'
     audit: [],
   })
@@ -86,6 +88,8 @@ function joinRoom(sessionId, role, ws, peerId) {
 function approvePendingGuest(sessionId, peerId) {
   const room = rooms.get(sessionId)
   if (!room) return null
+  const cap = room.maxGuests || MAX_GUESTS_DEFAULT
+  if (room.guests.size >= cap) return null
   const pending = room.pendingGuests.get(peerId)
   if (!pending) return null
   room.pendingGuests.delete(peerId)
@@ -188,6 +192,9 @@ function setLocked(sessionId, locked) {
 function setGuestCap(sessionId, maxGuests) {
   const room = rooms.get(sessionId)
   if (!room) return false
+  if (maxGuests === null || maxGuests > room.maxGuestLimit) {
+    return { error: 'plan-limit', max: room.maxGuestLimit }
+  }
   // Cannot lower cap below current guest count
   if (maxGuests !== null && room.guests.size > maxGuests) return { error: 'cap-too-low', current: room.guests.size }
   room.maxGuests = maxGuests
