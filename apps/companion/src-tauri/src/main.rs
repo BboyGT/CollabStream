@@ -9,7 +9,10 @@ mod relay;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    Manager, Runtime, GlobalShortcutManager,
+    Manager,
+};
+use tauri_plugin_global_shortcut::{
+    Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
 };
 
 #[tokio::main]
@@ -19,6 +22,18 @@ async fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
+            let pause_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyP);
+            app.handle().plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(move |_app, shortcut, event| {
+                        if shortcut == &pause_shortcut && event.state() == ShortcutState::Pressed {
+                            auth::toggle_pause();
+                        }
+                    })
+                    .build(),
+            )?;
+            app.global_shortcut().register(pause_shortcut)?;
+
             // Build tray icon + menu
             let quit = MenuItem::with_id(app, "quit", "Quit CollabStream Companion", true, None::<&str>)?;
             let show = MenuItem::with_id(app, "show", "Status", true, None::<&str>)?;
@@ -71,13 +86,6 @@ async fn main() {
                     }
                 })
                 .build(app)?;
-
-            // Global hotkey: Cmd/Ctrl+Shift+P to toggle pause
-            if let Ok(mut gsm) = app.global_shortcut_manager() {
-                let _ = gsm.register("CmdOrCtrl+Shift+P", || {
-                    auth::toggle_pause();
-                });
-            }
 
             println!("[companion] CollabStream Companion started — relay on ws://localhost:7734");
             Ok(())

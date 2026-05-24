@@ -236,9 +236,21 @@ export default function useWebRTC({ role, localStream, screenStream, onDataChann
 
   useEffect(() => {
     return () => {
+      Object.values(dataChannels.current).forEach((channel) => {
+        try { channel.close() } catch {}
+      })
+      const pc = pcRef.current
+      pc?.getReceivers().forEach((receiver) => receiver.track?.stop?.())
+      pc?.getSenders().forEach((sender) => {
+        try { sender.track && pc.removeTrack(sender) } catch {}
+      })
       pcRef.current?.close()
+      pcRef.current = null
+      setPeerConnected(false)
+      setRemoteStream(null)
+      setRemoteScreenStream(null)
     }
-  }, [])
+  }, [setPeerConnected, setRemoteStream, setRemoteScreenStream])
 
   const getStats = useCallback(async () => {
     const pc = pcRef.current

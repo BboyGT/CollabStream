@@ -76,6 +76,12 @@ const useSession = create((set, get) => ({
   setSpotlight: (s) => set({ spotlight: s }),
   setBranding: (b) => set({ branding: b }),
   setUserPlan: (p) => set({ userPlan: p }),
+  stopLocalMedia: () => {
+    const { localStream, screenStream } = get()
+    localStream?.getTracks?.().forEach((track) => track.stop())
+    screenStream?.getTracks?.().forEach((track) => track.stop())
+    set({ localStream: null, screenStream: null })
+  },
 
   reset: () => set({
     sessionId: null, role: null, peerId: null, sessionToken: null, guestCount: 0,

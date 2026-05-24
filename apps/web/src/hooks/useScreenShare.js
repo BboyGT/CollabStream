@@ -23,6 +23,7 @@ export default function useScreenShare(addScreenTrack) {
         video: videoConstraints,
         audio: false,
       })
+      streamRef.current?.getTracks().forEach((track) => track.stop())
       streamRef.current = stream
       setScreenStream(stream)
       addScreenTrack?.(stream)

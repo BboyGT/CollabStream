@@ -99,9 +99,24 @@ async function pruneOldData(retentionDays = 30) {
 }
 
 async function getStats() {
-  if (!supabase) return { totalSessions: 0 }
-  const { count } = await supabase.from('sessions').select('id', { count: 'exact', head: true })
-  return { totalSessions: count || 0 }
+  if (!supabase) return { total: 0, totalSessions: 0, active: 0, today: 0 }
+  const todayStart = new Date()
+  todayStart.setHours(0, 0, 0, 0)
+  const [
+    { count: total },
+    { count: active },
+    { count: today },
+  ] = await Promise.all([
+    supabase.from('sessions').select('id', { count: 'exact', head: true }),
+    supabase.from('sessions').select('id', { count: 'exact', head: true }).eq('status', 'active'),
+    supabase.from('sessions').select('id', { count: 'exact', head: true }).gte('started_at', todayStart.toISOString()),
+  ])
+  return {
+    total: total || 0,
+    totalSessions: total || 0,
+    active: active || 0,
+    today: today || 0,
+  }
 }
 
 async function setRecordingUrl(sessionId, key) {

@@ -1,5 +1,7 @@
 node_modules/
 dist/
+target/
+gen/
 build/
 out/
 coverage/
@@ -14,7 +16,6 @@ coverage/
 *.sqlite
 *.sqlite3
 *.db
-supabase/migrations/*.sql
 .DS_Store
 .idea/
 .vscode/*

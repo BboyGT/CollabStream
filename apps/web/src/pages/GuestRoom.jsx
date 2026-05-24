@@ -133,6 +133,7 @@ export default function GuestRoom() {
     annotationColor, annotationTool,
     setAnnotationColor, setAnnotationSize, setAnnotationTool,
     screenStream, setRemoteScreenStreamId, setRemoteScreenStream,
+    stopLocalMedia,
   } = useSession()
 
   useEffect(() => {
@@ -223,9 +224,7 @@ export default function GuestRoom() {
 
   function handleLeaveConfirm() {
     sendData('annotation', { type: 'admin', action: 'leave', name })
-    // Fix 3: stop all tracks so the camera light turns off immediately
-    localStream?.getTracks().forEach((t) => t.stop())
-    screenStream?.getTracks().forEach((t) => t.stop())
+    stopLocalMedia()
     navigate('/')
   }
 
@@ -235,7 +234,7 @@ export default function GuestRoom() {
   }
 
   const handleDataMessage = useCallback((msg) => {
-    if (msg.type === 'admin' && msg.action === 'kick') { navigate('/'); return }
+    if (msg.type === 'admin' && (msg.action === 'kick' || msg.action === 'end')) { stopLocalMedia(); navigate('/'); return }
     if (msg.type === 'draw' || msg.type === 'clear' || msg.type === 'stroke' || msg.type === 'laser' || msg.type === 'undo') annotation.handleRemoteDraw(msg)
     if (msg.type === 'wb-clear') annotation.clearCanvasLocal()
     if (msg.type === 'text-stamp') {
@@ -273,7 +272,7 @@ export default function GuestRoom() {
       if (!chatOpen) { setUnreadCount((c) => c + 1); playChatMessage() }
     }
     handleAudioEvent(msg)
-  }, [annotation, setControlGranted, setControlToken, setMode, handleAudioEvent, navigate, chat, chatOpen, setRemoteScreenStreamId, setRemoteScreenStream, shareQuality])
+  }, [annotation, setControlGranted, setControlToken, setMode, handleAudioEvent, navigate, chat, chatOpen, setRemoteScreenStreamId, setRemoteScreenStream, shareQuality, stopLocalMedia])
 
   const { handleSignal, setSignalSend, getStats, addScreenTrack, renegotiate } = useWebRTC({
     role: 'guest', localStream, screenStream,
@@ -285,6 +284,11 @@ export default function GuestRoom() {
   const { startShare, stopShare } = useScreenShare(addScreenTrack)
   startShareRef.current = startShare
   renegotiateRef.current = renegotiate
+
+  useEffect(() => () => {
+    stopShare()
+    stopLocalMedia()
+  }, [stopShare, stopLocalMedia])
 
   async function toggleNoiseSupp() {
     const track = localStream?.getAudioTracks?.()?.[0]; if (!track) return
@@ -328,6 +332,7 @@ export default function GuestRoom() {
 
   const { send: signalingWrite, retryCount, manualRetry, maxRetries } = useSignaling(sessionId, 'guest', (msg) => {
     if (msg.type === 'error' && ['room-full', 'invalid-token', 'room-locked'].includes(msg.message)) setNotFound(true)
+    if (msg.type === 'admin') { handleDataMessage(msg); return }
     if (msg.type === 'peer-left') setPeerLeft(true)
     if (msg.type === 'pending-approval') { setPendingApproval(true); return }
     if (msg.type === 'admitted') { setPendingApproval(false); setAdmitted(true) }

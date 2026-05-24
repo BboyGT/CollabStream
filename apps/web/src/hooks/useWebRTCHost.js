@@ -196,7 +196,13 @@ export default function useWebRTCHost({ localStream, screenStream, onDataChannel
 
   const closePeer = useCallback((peerId) => {
     const pc = pcsRef.current.get(peerId)
-    if (pc) pc.close()
+    if (pc) {
+      pc.getReceivers().forEach((receiver) => receiver.track?.stop?.())
+      pc.close()
+    }
+    Object.values(channelsRef.current.get(peerId) || {}).forEach((channel) => {
+      try { channel.close() } catch {}
+    })
     pcsRef.current.delete(peerId)
     channelsRef.current.delete(peerId)
   }, [])
@@ -215,6 +221,21 @@ export default function useWebRTCHost({ localStream, screenStream, onDataChannel
     const pc = pcsRef.current.get(peerId)
     if (!pc) return null
     try { return await pc.getStats() } catch { return null }
+  }, [])
+
+  useEffect(() => () => {
+    channelsRef.current.forEach((channels) => {
+      Object.values(channels || {}).forEach((channel) => {
+        try { channel.close() } catch {}
+      })
+    })
+    pcsRef.current.forEach((pc) => {
+      pc.getReceivers().forEach((receiver) => receiver.track?.stop?.())
+      pc.close()
+    })
+    channelsRef.current.clear()
+    pcsRef.current.clear()
+    pendingRef.current.clear()
   }, [])
 
   return { handleSignal, setSignalSend, sendToPeer, broadcast, addScreenTrack, closePeer, setRemoteAudio, createPC, getStats }

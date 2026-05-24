@@ -234,6 +234,14 @@ function cleanupRooms() {
   }
 }
 
+function endRoom(sessionId) {
+  const room = rooms.get(sessionId)
+  if (!room) return null
+  rooms.delete(sessionId)
+  endSessionRecord(sessionId, room.guests?.size || 0)
+  return room
+}
+
 module.exports = {
   createRoom,
   getRoom,
@@ -250,6 +258,7 @@ module.exports = {
   touchRoom,
   getAudit,
   cleanupRooms,
+  endRoom,
   approvePendingGuest,
   rejectPendingGuest,
   setPendingGuestName,

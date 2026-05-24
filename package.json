@@ -5,7 +5,8 @@
   "workspaces": [
     "apps/web",
     "apps/server",
-    "apps/companion"
+    "apps/companion",
+    "apps/mobile"
   ],
   "scripts": {
     "dev": "node scripts/sync-ngrok.js && concurrently --names \"server,web\" --prefix-colors \"cyan,green\" \"npm run dev --workspace=apps/server\" \"npm run dev --workspace=apps/web\"",

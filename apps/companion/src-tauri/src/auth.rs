@@ -1,10 +1,10 @@
 // auth.rs — holds the armed token for the current session
-use once_cell::sync::Mutex;
+use std::sync::Mutex;
 
-static ARMED_TOKEN: Mutex<Option<String>> = Mutex::const_new(None);
-static PAUSED: Mutex<bool> = Mutex::const_new(false);
-static ALLOW_MOUSE: Mutex<bool> = Mutex::const_new(true);
-static ALLOW_KEYBOARD: Mutex<bool> = Mutex::const_new(true);
+static ARMED_TOKEN: Mutex<Option<String>> = Mutex::new(None);
+static PAUSED: Mutex<bool> = Mutex::new(false);
+static ALLOW_MOUSE: Mutex<bool> = Mutex::new(true);
+static ALLOW_KEYBOARD: Mutex<bool> = Mutex::new(true);
 
 /// Arm with a new session token. Companion will only process input after this.
 pub fn arm(token: String) {

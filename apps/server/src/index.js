@@ -13,6 +13,7 @@ const { customAlphabet } = require('nanoid')
 const {
   createRoom, getRoom, getRoomByJoinCode, verifyToken,
   setLocked, setGuestCap, getAudit, cleanupRooms, getGuests, getGuestCount,
+  endRoom,
 } = require('./rooms')
 const {
   createSessionRecord, endSessionRecord, addAuditEvent,
@@ -42,6 +43,7 @@ const logoUpload = multer({
 const rateLimitWindowMs = positiveNumber(process.env.RATE_LIMIT_WINDOW_MS, 60_000)
 const rateLimitMax = positiveNumber(process.env.RATE_LIMIT_MAX, 120)
 const rateLimitBuckets = new Map()
+let retentionDays = positiveNumber(process.env.RETENTION_DAYS, 30)
 const rateLimitCleanup = setInterval(() => {
   const now = Date.now()
   for (const [key, bucket] of rateLimitBuckets.entries()) {
@@ -607,6 +609,51 @@ app.get('/admin/sessions', async (req, res) => {
   res.json({ sessions })
 })
 
+app.get('/admin/retention', async (req, res) => {
+  if (!requireAdminToken(req, res)) return
+  res.json({ days: retentionDays })
+})
+
+app.post('/admin/retention', async (req, res) => {
+  if (!requireAdminToken(req, res)) return
+  const days = Number(req.body?.days)
+  if (!Number.isFinite(days) || days < 1 || days > 3650) {
+    return res.status(400).json({ error: 'invalid-retention-days' })
+  }
+  retentionDays = Math.floor(days)
+  res.json({ days: retentionDays })
+})
+
+app.get('/admin/sessions/:sessionId/audit', async (req, res) => {
+  if (!requireAdminToken(req, res)) return
+  const events = await getAuditTrail(req.params.sessionId)
+  res.json({
+    events: events.map((event) => ({
+      ts: event.created_at || event.ts,
+      event: event.event_type || event.event,
+      payload: event.payload || {},
+    })),
+  })
+})
+
+app.post('/admin/sessions/:sessionId/end', async (req, res) => {
+  if (!requireAdminToken(req, res)) return
+  const room = endRoom(req.params.sessionId)
+  if (room) {
+    for (const [, guestWs] of room.guests.entries()) {
+      if (guestWs.readyState === 1) guestWs.send(JSON.stringify({ type: 'admin', action: 'end' }))
+      try { guestWs.close() } catch {}
+    }
+    if (room.host?.readyState === 1) {
+      room.host.send(JSON.stringify({ type: 'admin', action: 'end' }))
+      try { room.host.close() } catch {}
+    }
+  } else {
+    await endSessionRecord(req.params.sessionId)
+  }
+  res.json({ ok: true })
+})
+
 app.get('/admin/stats', async (req, res) => {
   if (!requireAdminToken(req, res)) return
   res.json(await getStats())
@@ -634,7 +681,7 @@ const pingInterval = setInterval(() => {
 
 wss.on('close', () => clearInterval(pingInterval))
 setInterval(() => cleanupRooms(), 60000)
-setInterval(() => pruneOldData(Number(process.env.RETENTION_DAYS || 30)), 6 * 60 * 60 * 1000)
+setInterval(() => pruneOldData(retentionDays), 6 * 60 * 60 * 1000)
 
 const PORT = process.env.PORT || 3001
 server.listen(PORT, () => { console.log(`CollabStream signaling server running on :${PORT}`) })

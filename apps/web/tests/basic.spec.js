@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test'
 
-test('landing loads and start button is visible', async ({ page }) => {
+test('landing loads and primary CTA is visible', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('button', { name: /start session/i })).toBeVisible()
+  await expect(page.getByRole('button', { name: /start for free/i }).first()).toBeVisible()
 })
 
 test('guest not found shows error', async ({ page }) => {
@@ -10,13 +10,9 @@ test('guest not found shows error', async ({ page }) => {
   await expect(page.getByText(/session not found/i)).toBeVisible()
 })
 
-test('can create session via API and open host/guest pages', async ({ request, page, context }) => {
-  const res = await request.post('http://localhost:3001/session')
-  const data = await res.json()
-  const { sessionId, token } = data
-  await page.goto(`/room/${sessionId}/host?token=${token}`)
-  const guest = await context.newPage()
-  await guest.goto(`/room/${sessionId}?token=${token}`)
-  await expect(page.getByText(/CollabStream/i)).toBeVisible()
-  await expect(guest.getByText(/CollabStream/i)).toBeVisible()
+test('session creation requires auth', async ({ request }) => {
+  const res = await request.post('http://localhost:3001/session', {
+    data: { sessionName: 'E2E session' },
+  })
+  expect(res.status()).toBe(401)
 })

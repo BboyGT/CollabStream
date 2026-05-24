@@ -215,6 +215,7 @@ export default function HostRoom() {
     setControlGranted, setControlToken, setMode, setPeerConnected,
     peerConnected, signalingConnected, peerLeft, setPeerLeft, guestCount,
     mode, branding, userPlan,
+    stopLocalMedia,
   } = useSession()
 
   // Fix 5: beforeunload reload guard
@@ -266,8 +267,8 @@ export default function HostRoom() {
 
   // Fix 3: stop tracks on unmount
   useEffect(() => {
-    return () => { localStream?.getTracks().forEach((t) => t.stop()) }
-  }, [localStream])
+    return () => { stopLocalMedia() }
+  }, [stopLocalMedia])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -453,6 +454,12 @@ export default function HostRoom() {
   }, [annotation, companion, controlToken, handleAudioEvent, controlPeerId, controlSupported, hostRTC, chat, chatOpen, addJoinToast, guestNames])
 
   const { send: signalingWrite, retryCount, manualRetry, maxRetries } = useSignaling(sessionId, 'host', (msg) => {
+    if (msg.type === 'admin' && msg.action === 'end') {
+      stopShare()
+      stopLocalMedia()
+      navigate('/')
+      return
+    }
     if (msg.type === 'peer-left') setPeerLeft(true)
     if (msg.type === 'knock') setKnockQueue((q) => [...q, { peerId: msg.peerId, name: msg.name || 'Guest' }])
     hostRTC.handleSignal(msg)
@@ -662,8 +669,9 @@ export default function HostRoom() {
 
   // Fix 3: stop all tracks, show recap instead of immediate navigate
   function handleEnd() {
-    localStream?.getTracks().forEach((t) => t.stop())
-    screenStream?.getTracks().forEach((t) => t.stop())
+    hostRTC.broadcast('annotation', { type: 'admin', action: 'end' })
+    stopShare()
+    stopLocalMedia()
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop()
     audioCtxRef.current?.close?.()
     handleRevoke()
