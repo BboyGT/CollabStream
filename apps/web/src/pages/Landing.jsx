@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import CreatorSignature from '../components/CreatorSignature.jsx'
 
 // ── Intersection Observer hook for scroll animations ─────────────────────────
@@ -79,10 +79,10 @@ function PricingCard({ name, price, period, features, cta, ctaHref, highlight })
           </li>
         ))}
       </ul>
-      <a href={ctaHref}
+      <Link to={ctaHref}
         className={`w-full py-3 rounded-xl text-sm font-mono font-semibold text-center transition-all ${highlight ? 'bg-cyan-500 hover:bg-cyan-400 text-zinc-900' : 'bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700'}`}>
         {cta}
-      </a>
+      </Link>
     </div>
   )
 }
