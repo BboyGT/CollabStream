@@ -140,7 +140,7 @@ export default function useAnnotation(canvasRef, pointerRef, sendData, role) {
   const onPointerDown = useCallback((e) => {
     const tool = modeRef.current === 'laser' ? 'laser' : toolRef.current
     if (modeRef.current !== 'annotate' && modeRef.current !== 'laser') return
-    if (tool === 'laser') return
+    if (tool === 'laser' || tool === 'text') return
     drawing.current = true
     const canvas = canvasRef.current
     const { x, y } = normalize(canvas, e.clientX, e.clientY)

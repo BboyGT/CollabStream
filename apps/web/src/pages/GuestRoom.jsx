@@ -76,6 +76,7 @@ export default function GuestRoom() {
   const [fitMode, setFitMode] = useState(() => window.matchMedia?.('(max-width: 768px)').matches ? 'cover' : 'contain')
   const [whiteboard, setWhiteboard] = useState(false)
   const [wbStrokeWidth, setWbStrokeWidth] = useState(3)
+  const [textInput, setTextInput] = useState(null)
   const [reactions, setReactions] = useState([])
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [waitingLong, setWaitingLong] = useState(false)
@@ -231,6 +232,31 @@ export default function GuestRoom() {
   function handleWbClear() {
     annotation.clearCanvasLocal()
     sendData('annotation', { type: 'wb-clear' })
+  }
+
+  function commitText(value) {
+    if (!value?.trim() || !textInput) { setTextInput(null); return }
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    ctx.font = `${16 * (wbStrokeWidth || 3) / 3}px monospace`
+    ctx.fillStyle = annotationColor
+    ctx.fillText(value, textInput.x * canvas.width, textInput.y * canvas.height)
+    sendData('annotation', { type: 'text-stamp', x: textInput.x, y: textInput.y, text: value, color: annotationColor, size: wbStrokeWidth })
+    setTextInput(null)
+  }
+
+  function onWbPointerDown(e) {
+    if (annotationTool === 'text' && mode === 'annotate') {
+      const canvas = canvasRef.current
+      if (!canvas) return
+      const rect = canvas.getBoundingClientRect()
+      const px = e.clientX - rect.left
+      const py = e.clientY - rect.top
+      setTextInput({ x: px / rect.width, y: py / rect.height, px, py })
+      return
+    }
+    annotation.onPointerDown(e)
   }
 
   const handleDataMessage = useCallback((msg) => {
@@ -505,10 +531,31 @@ export default function GuestRoom() {
                 ref={canvasRef}
                 className="absolute inset-0 w-full h-full"
                 style={{ touchAction: 'none' }}
-                onPointerDown={annotation.onPointerDown}
+                onPointerDown={onWbPointerDown}
                 onPointerMove={annotation.onPointerMove}
                 onPointerUp={annotation.onPointerUp}
               />
+              {textInput && (
+                <input
+                  autoFocus
+                  style={{
+                    position: 'absolute',
+                    left: textInput.px,
+                    top: textInput.py,
+                    background: 'transparent',
+                    border: 'none',
+                    borderBottom: `2px solid ${annotationColor}`,
+                    outline: 'none',
+                    fontSize: `${16 * (wbStrokeWidth || 3) / 3}px`,
+                    color: annotationColor,
+                    fontFamily: 'monospace',
+                    minWidth: 80,
+                    zIndex: 30,
+                  }}
+                  onBlur={(e) => commitText(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') commitText(e.target.value); if (e.key === 'Escape') setTextInput(null) }}
+                />
+              )}
             </div>
           ) : hasScreen ? (
             <div className="w-full h-full" onMouseMove={onCursorMove}>

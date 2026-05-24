@@ -424,6 +424,7 @@ export default function HostRoom() {
       ctx.font = `${16 * (msg.size || 3) / 3}px monospace`
       ctx.fillStyle = msg.color || '#000'
       ctx.fillText(msg.text, msg.x * canvas.width, msg.y * canvas.height)
+      hostRTC.broadcast('annotation', msg, peerId)
     }
     if (msg.type === 'input' && controlToken && peerId === controlPeerId) companion.forwardInput(controlToken, msg)
     if (msg.type === 'admin' && msg.action === 'name' && msg.name) { setGuestNames((n) => ({ ...n, [peerId]: msg.name })); addJoinToast(`${msg.name} joined`) }
