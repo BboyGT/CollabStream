@@ -63,7 +63,7 @@ export default function GuestRoom() {
   const [locked, setLocked] = useState(false)
   const [mediaError, setMediaError] = useState(null)
   const [controlDenied, setControlDenied] = useState(false)
-  const [name, setName] = useState(null)
+  const [name, setName] = useState(() => localStorage.getItem('cs_name') || null)
   const [videoEnabled, setVideoEnabled] = useState(true)
   const [handRaised, setHandRaised] = useState(false)
   const [rosterOpen, setRosterOpen] = useState(false)
@@ -198,9 +198,11 @@ export default function GuestRoom() {
   useEffect(() => { requestMedia() }, [requestMedia])
 
   useEffect(() => {
-    const id = localStorage.getItem('cs_name') || `Guest-${Math.floor(Math.random() * 900 + 100)}`
+    if (name) return
+    const id = `Guest-${Math.floor(Math.random() * 900 + 100)}`
+    localStorage.setItem('cs_name', id)
     setName(id)
-  }, [])
+  }, [name])
 
   const sendData = useCallback((channel, msg) => {
     const ch = dataChannels?.[channel]
@@ -364,7 +366,7 @@ export default function GuestRoom() {
     if (msg.type === 'admitted') { setPendingApproval(false); setAdmitted(true) }
     if (msg.type === 'knock-rejected') { setPendingApproval(false); setKnockRejected(true); return }
     handleSignal(msg)
-  })
+  }, name || '')
 
   useEffect(() => { setSignalSend(signalingWrite) }, [signalingWrite, setSignalSend])
   useEffect(() => { if (signalingWrite && localStream && !pendingApproval) signalingWrite({ type: 'ready' }) }, [signalingWrite, localStream, pendingApproval])

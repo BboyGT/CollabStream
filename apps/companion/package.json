@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build"
+    "build": "vite build && tauri build --no-bundle",
+    "build:bundle": "vite build && tauri build"
   },
   "dependencies": {
     "react": "^18.2.0",

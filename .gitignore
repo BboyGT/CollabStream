@@ -5,6 +5,10 @@ gen/
 build/
 out/
 coverage/
+playwright-report/
+test-results/
+apps/web/playwright-report/
+apps/web/test-results/
 .turbo/
 .logs/
 *.log
