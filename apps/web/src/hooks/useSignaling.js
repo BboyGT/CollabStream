@@ -9,7 +9,7 @@ const DEFAULT_SIGNAL_URL = (() => {
 const SIGNAL_URL = import.meta.env.VITE_SIGNAL_URL || DEFAULT_SIGNAL_URL
 const MAX_RETRIES = 5
 
-export default function useSignaling(sessionId, role, onMessage) {
+export default function useSignaling(sessionId, role, onMessage, guestName = '') {
   const wsRef = useRef(null)
   const retriesRef = useRef(0)
   const mountedRef = useRef(true)
@@ -36,7 +36,8 @@ export default function useSignaling(sessionId, role, onMessage) {
       retriesRef.current = 0
       setRetryCount(0)
       setSignalingConnected(true)
-      ws.send(JSON.stringify({ type: 'register', sessionId, role, token: sessionToken }))
+      const registerName = guestName || (role === 'guest' ? localStorage.getItem('cs_name') : '')
+      ws.send(JSON.stringify({ type: 'register', sessionId, role, token: sessionToken, guestName: registerName }))
     }
 
     ws.onmessage = (e) => {
@@ -70,7 +71,7 @@ export default function useSignaling(sessionId, role, onMessage) {
       console.error('Signaling WS error:', err)
       ws.close()
     }
-  }, [sessionId, role, sessionToken, setSignalingConnected, setPeerId, setGuestCount])
+  }, [sessionId, role, sessionToken, guestName, setSignalingConnected, setPeerId, setGuestCount])
 
   // Keep ref current so the closure inside onclose always calls the latest connect
   connectRef.current = connect

@@ -211,9 +211,9 @@ async function validateWebhookUrl(rawUrl) {
 }
 
 async function requireAuth(req, res, next) {
-  if (!supabase) return res.status(503).json({ error: 'supabase-not-configured' })
   const token = req.headers.authorization?.replace('Bearer ', '').trim()
   if (!token) return res.status(401).json({ error: 'Not authenticated' })
+  if (!supabase) return res.status(503).json({ error: 'supabase-not-configured' })
   const { data: { user }, error } = await supabase.auth.getUser(token)
   if (error || !user) return res.status(401).json({ error: 'Invalid token' })
   const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single()

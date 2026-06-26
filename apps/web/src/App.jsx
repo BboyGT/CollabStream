@@ -8,6 +8,7 @@ import AdminDashboard from './pages/AdminDashboard.jsx'
 import AuthPage from './pages/AuthPage.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Settings from './pages/Settings.jsx'
+import JoinPage from './pages/JoinPage.jsx'
 import { ToastProvider } from './components/Toast.jsx'
 import { supabase } from './lib/supabase.js'
 import { getToken } from './lib/auth.js'
@@ -97,7 +98,7 @@ export default function App() {
           <Route path="/room/:sessionId" element={<GuestRoom />} />
 
           {/* Join shortcut */}
-          <Route path="/join/:code" element={<AppLanding />} />
+          <Route path="/join/:code" element={<JoinPage />} />
 
           {/* Dashboard & settings */}
           <Route path="/dashboard" element={
