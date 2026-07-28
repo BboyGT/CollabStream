@@ -4,7 +4,6 @@ const fs = require('fs')
 const path = require('path')
 
 const ENV_LOCAL = path.resolve(__dirname, '../apps/web/.env.local')
-const VITE_CONFIG = path.resolve(__dirname, '../apps/web/vite.config.js')
 const WEB_PORT = String(process.env.PUBLIC_WEB_PORT || 5173)
 
 function fetchTunnels() {
@@ -34,13 +33,9 @@ function syncFiles(publicUrl) {
 
   let envContent = ''
   try { envContent = fs.readFileSync(ENV_LOCAL, 'utf8') } catch {}
-  fs.writeFileSync(ENV_LOCAL, upsertLine(envContent, 'VITE_PUBLIC_URL', publicUrl), 'utf8')
-
-  let viteContent = fs.readFileSync(VITE_CONFIG, 'utf8')
-  if (/allowedHosts:\s*\[.*?\]/s.test(viteContent)) {
-    viteContent = viteContent.replace(/allowedHosts:\s*\[.*?\]/s, `allowedHosts: ['${hostname}']`)
-    fs.writeFileSync(VITE_CONFIG, viteContent, 'utf8')
-  }
+  envContent = upsertLine(envContent, 'VITE_PUBLIC_URL', publicUrl)
+  envContent = upsertLine(envContent, 'VITE_ALLOWED_HOSTS', hostname)
+  fs.writeFileSync(ENV_LOCAL, envContent, 'utf8')
 }
 
 async function main() {

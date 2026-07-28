@@ -43,7 +43,15 @@ export default function useSignaling(sessionId, role, onMessage, guestName = '')
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data)
-        if (msg.type === 'registered' && msg.peerId) setPeerId(msg.peerId)
+        // Pre-launch lobby (docs/pre-launch-lobby-plan.md): a lobby guest
+        // gets 'lobby-joined' instead of 'registered' (they haven't been
+        // admitted to anything yet), and later 'session-started' instead of
+        // a second 'registered' once the host starts the call — neither of
+        // those message types was previously captured here, so a lobby-
+        // origin guest's own peerId would never get set in the session
+        // store at all, breaking anything that compares against it (e.g.
+        // "is this me" checks in a roster).
+        if ((msg.type === 'registered' || msg.type === 'lobby-joined' || msg.type === 'session-started') && msg.peerId) setPeerId(msg.peerId)
         if (msg.type === 'peer-joined' && typeof msg.guestCount === 'number') setGuestCount(msg.guestCount)
         if (msg.type === 'peer-left' && typeof msg.guestCount === 'number') setGuestCount(msg.guestCount)
         onMessageRef.current?.(msg)

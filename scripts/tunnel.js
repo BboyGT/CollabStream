@@ -5,7 +5,6 @@ const path = require('path')
 
 const WEB_PORT = Number(process.env.PUBLIC_WEB_PORT || 5173)
 const ENV_LOCAL = path.resolve(__dirname, '../apps/web/.env.local')
-const VITE_CONFIG = path.resolve(__dirname, '../apps/web/vite.config.js')
 
 function upsertLine(content, key, value) {
   const line = `${key}=${value}`
@@ -20,13 +19,8 @@ function syncProjectUrl(publicUrl) {
   let envContent = ''
   try { envContent = fs.readFileSync(ENV_LOCAL, 'utf8') } catch {}
   envContent = upsertLine(envContent, 'VITE_PUBLIC_URL', publicUrl)
+  envContent = upsertLine(envContent, 'VITE_ALLOWED_HOSTS', hostname)
   fs.writeFileSync(ENV_LOCAL, envContent, 'utf8')
-
-  let viteContent = fs.readFileSync(VITE_CONFIG, 'utf8')
-  if (/allowedHosts:\s*\[.*?\]/s.test(viteContent)) {
-    viteContent = viteContent.replace(/allowedHosts:\s*\[.*?\]/s, `allowedHosts: ['${hostname}']`)
-  }
-  fs.writeFileSync(VITE_CONFIG, viteContent, 'utf8')
 }
 
 function hasGlobalNgrok() {
@@ -42,7 +36,7 @@ async function startSdkTunnel() {
   const publicUrl = listener.url()
   syncProjectUrl(publicUrl)
   console.log(`[tunnel] ngrok SDK tunnel ready: ${publicUrl}`)
-  console.log('[tunnel] Synced VITE_PUBLIC_URL and Vite allowedHosts.')
+  console.log('[tunnel] Synced VITE_PUBLIC_URL and VITE_ALLOWED_HOSTS.')
   process.on('SIGINT', async () => {
     await listener.close().catch(() => {})
     process.exit(0)

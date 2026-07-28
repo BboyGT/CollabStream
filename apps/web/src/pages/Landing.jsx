@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import CreatorSignature from '../components/CreatorSignature.jsx'
 
 // ── Intersection Observer hook for scroll animations ─────────────────────────
@@ -27,6 +27,7 @@ function Section({ children, className = '', ...props }) {
 // ── Comparison table data ────────────────────────────────────────────────────
 const TABLE_ROWS = [
   { feature: 'Screen share', cs: true, zoom: true, meet: true, tv: true },
+  { feature: 'Approve every guest (knock-to-join)', cs: true, zoom: '⚠ waiting room only', meet: '⚠ basic ask-to-join', tv: false },
   { feature: 'Annotation', cs: true, zoom: '⚠ basic', meet: false, tv: false },
   { feature: 'Whiteboard', cs: true, zoom: true, meet: true, tv: false },
   { feature: 'Remote control', cs: true, zoom: false, meet: false, tv: true },
@@ -88,8 +89,6 @@ function PricingCard({ name, price, period, features, cta, ctaHref, highlight })
 }
 
 export default function Landing() {
-  const navigate = useNavigate()
-
   return (
     <div className="min-h-screen bg-zinc-950 text-slate-200">
 
@@ -119,14 +118,14 @@ export default function Landing() {
           <nav className="hidden md:flex items-center gap-6">
             <a href="#features" className="text-sm font-mono text-slate-400 hover:text-slate-200 transition-colors">Features</a>
             <a href="#pricing" className="text-sm font-mono text-slate-400 hover:text-slate-200 transition-colors">Pricing</a>
-            <button onClick={() => navigate('/auth')} className="text-sm font-mono text-slate-400 hover:text-slate-200 transition-colors">Sign in</button>
-            <button onClick={() => navigate('/auth')} className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-zinc-900 rounded-lg text-sm font-mono font-semibold transition-all">
+            <Link to="/auth" className="text-sm font-mono text-slate-400 hover:text-slate-200 transition-colors">Sign in</Link>
+            <Link to="/auth" className="px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-zinc-900 rounded-lg text-sm font-mono font-semibold transition-all">
               Get started
-            </button>
+            </Link>
           </nav>
-          <button onClick={() => navigate('/auth')} className="md:hidden px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-zinc-900 rounded-lg text-sm font-mono font-semibold">
+          <Link to="/auth" className="md:hidden px-4 py-2 bg-cyan-500 hover:bg-cyan-400 text-zinc-900 rounded-lg text-sm font-mono font-semibold">
             Get started
-          </button>
+          </Link>
         </div>
       </header>
 
@@ -144,13 +143,13 @@ export default function Landing() {
           The only video collaboration tool where your guest can control your screen — no downloads, no setup.
         </p>
         <div className="flex items-center justify-center gap-4 flex-wrap">
-          <button onClick={() => navigate('/auth')}
+          <Link to="/auth"
             className="group flex items-center gap-2 px-8 py-4 bg-cyan-500 hover:bg-cyan-400 text-zinc-900 rounded-xl text-base font-mono font-semibold transition-all shadow-lg shadow-cyan-900/30">
             Start for free
             <svg className="group-hover:translate-x-1 transition-transform" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
               <path d="M5 12h14M12 5l7 7-7 7" />
             </svg>
-          </button>
+          </Link>
           <a href="#features"
             className="px-8 py-4 bg-slate-900 border border-slate-700 hover:border-slate-600 text-slate-200 rounded-xl text-base font-mono transition-all">
             See it in action
@@ -165,12 +164,17 @@ export default function Landing() {
             <h2 className="text-3xl font-bold text-slate-100 font-mono mb-3">Everything you need to collaborate</h2>
             <p className="text-slate-400 font-light">Real-time tools that actually work — no plugins, no extensions.</p>
           </div>
-          <div className="grid md:grid-cols-3 gap-6">
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
             {[
               {
                 icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" strokeWidth="2" strokeLinecap="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M13 12H3" /></svg>,
                 title: 'Remote control handoff',
                 desc: 'Guest takes your mouse. One click. Zero installs. They drive, you watch — or take back control any time.',
+              },
+              {
+                icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" strokeWidth="2" strokeLinecap="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /><path d="M8 11h3" /></svg>,
+                title: 'Approve every guest',
+                desc: "Turn on knock-to-join and nobody enters until you tap admit — with a live queue, decline option, and one-tap kick or ban if someone slips through.",
               },
               {
                 icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="m9 17 2-2 4-4-2-2-4 4-2 2h2zm7-9-2-2" /></svg>,

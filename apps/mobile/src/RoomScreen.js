@@ -41,12 +41,14 @@ export default function RoomScreen({ route, navigation }) {
   const localStreamRef = useRef(null)
   const peerIdRef = useRef(generatePeerId())
   const mountedRef = useRef(true)
+  const leavingRef = useRef(false)
 
   useEffect(() => {
     mountedRef.current = true
+    leavingRef.current = false
 
-    async function setup() {
-      // 1. Camera + mic
+    async function ensurePeerConnection() {
+      if (pcRef.current) return pcRef.current
       try {
         const stream = await mediaDevices.getUserMedia({
           video: { facingMode: 'user', width: 640, height: 480, frameRate: 30 },
@@ -56,20 +58,16 @@ export default function RoomScreen({ route, navigation }) {
         setLocalStream(stream)
         localStreamRef.current = stream
 
-        // 2. Peer connection
         const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
         pcRef.current = pc
 
-        // 3. Add tracks
         stream.getTracks().forEach((t) => pc.addTrack(t, stream))
 
-        // 4. Remote stream
         pc.ontrack = (e) => {
           if (!mountedRef.current) return
           if (e.streams?.[0]) setRemoteStream(e.streams[0])
         }
 
-        // 5. ICE
         pc.onicecandidate = (e) => {
           if (e.candidate && wsRef.current?.readyState === 1) {
             wsRef.current.send(JSON.stringify({
@@ -88,80 +86,104 @@ export default function RoomScreen({ route, navigation }) {
           else if (s === 'disconnected') setStatus('disconnected')
         }
 
-        // 6. WS signaling
-        const ws = new WebSocket(WS_URL)
-        wsRef.current = ws
-
-        ws.onopen = () => {
-          if (!mountedRef.current) return
-          ws.send(JSON.stringify({
-            type: 'register',
-            sessionId,
-            role: 'guest',
-            peerId: peerIdRef.current,
-            token,
-            guestName: name || 'Mobile Guest',
-          }))
-        }
-
-        ws.onmessage = async (e) => {
-          if (!mountedRef.current) return
-          try {
-            const msg = JSON.parse(e.data)
-
-            if (msg.type === 'error') {
-              setError(msg.message || 'Connection error')
-              return
-            }
-            if (msg.type === 'registered') {
-              ws.send(JSON.stringify({ type: 'ready' }))
-              setStatus('waiting')
-              return
-            }
-            if (msg.type === 'pending-approval') {
-              setStatus('pending')
-              return
-            }
-            if (msg.type === 'admitted') {
-              setStatus('waiting')
-              ws.send(JSON.stringify({ type: 'ready' }))
-              return
-            }
-            if (msg.type === 'knock-rejected') {
-              setError('Host declined your request')
-              return
-            }
-            if (msg.type === 'peer-left') {
-              setStatus('host-left')
-              return
-            }
-            if (msg.type === 'offer') {
-              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
-              const answer = await pc.createAnswer()
-              await pc.setLocalDescription(answer)
-              ws.send(JSON.stringify({
-                type: 'answer',
-                sdp: pc.localDescription,
-                targetPeerId: 'host',
-              }))
-            }
-            if (msg.type === 'answer') {
-              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
-            }
-            if (msg.type === 'ice-candidate' && msg.candidate) {
-              await pc.addIceCandidate(new RTCIceCandidate(msg.candidate))
-            }
-          } catch {}
-        }
-
-        ws.onerror = () => {
-          if (mountedRef.current) setError('Could not connect to server. Check your LAN IP in config.js.')
-        }
-        ws.onclose = () => {
-          if (mountedRef.current && status !== 'leaving') setStatus('disconnected')
-        }
+        return pc
       } catch (err) {
         if (mountedRef.current) setError('Camera or microphone permission denied.')
+        return null
+      }
+    }
+
+    async function sendReady() {
+      const pc = await ensurePeerConnection()
+      if (pc && wsRef.current?.readyState === 1) {
+        wsRef.current.send(JSON.stringify({ type: 'ready' }))
+      }
+    }
+
+    function setup() {
+      const ws = new WebSocket(WS_URL)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        if (!mountedRef.current) return
+        ws.send(JSON.stringify({
+          type: 'register',
+          sessionId,
+          role: 'guest',
+          peerId: peerIdRef.current,
+          token,
+          guestName: name || 'Mobile Guest',
+        }))
+      }
+
+      ws.onmessage = async (e) => {
+        if (!mountedRef.current) return
+        try {
+          const msg = JSON.parse(e.data)
+
+          if (msg.type === 'error') {
+            setError(msg.message || 'Connection error')
+            return
+          }
+          if (msg.type === 'registered') {
+            setStatus('waiting')
+            await sendReady()
+            return
+          }
+          if (msg.type === 'lobby-joined') {
+            setStatus('lobby')
+            return
+          }
+          if (msg.type === 'session-started') {
+            setStatus('waiting')
+            await sendReady()
+            return
+          }
+          if (msg.type === 'pending-approval') {
+            setStatus('pending')
+            return
+          }
+          if (msg.type === 'admitted') {
+            setStatus('waiting')
+            await sendReady()
+            return
+          }
+          if (msg.type === 'knock-rejected') {
+            setError('Host declined your request')
+            return
+          }
+          if (msg.type === 'peer-left') {
+            setStatus('host-left')
+            return
+          }
+          if (msg.type === 'offer') {
+            const pc = await ensurePeerConnection()
+            if (!pc) return
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            ws.send(JSON.stringify({
+              type: 'answer',
+              sdp: pc.localDescription,
+              targetPeerId: 'host',
+            }))
+          }
+          if (msg.type === 'answer') {
+            const pc = await ensurePeerConnection()
+            if (pc) await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
+          }
+          if (msg.type === 'ice-candidate' && msg.candidate) {
+            const pc = pcRef.current
+            if (pc) await pc.addIceCandidate(new RTCIceCandidate(msg.candidate))
+          }
+        } catch {}
+      }
+
+      ws.onerror = () => {
+        if (mountedRef.current) setError('Could not connect to server. Check EXPO_PUBLIC_SERVER_URL.')
+      }
+      ws.onclose = () => {
+        if (mountedRef.current && !leavingRef.current) setStatus('disconnected')
       }
     }
 
@@ -169,11 +191,12 @@ export default function RoomScreen({ route, navigation }) {
 
     return () => {
       mountedRef.current = false
+      leavingRef.current = true
       localStreamRef.current?.getTracks().forEach((t) => t.stop())
       pcRef.current?.close()
       wsRef.current?.close()
     }
-  }, [])
+  }, [name, sessionId, token])
 
   function toggleMic() {
     const track = localStreamRef.current?.getAudioTracks?.()?.[0]
@@ -190,6 +213,7 @@ export default function RoomScreen({ route, navigation }) {
   }
 
   function handleLeave() {
+    leavingRef.current = true
     setStatus('leaving')
     localStreamRef.current?.getTracks().forEach((t) => t.stop())
     pcRef.current?.close()
@@ -200,6 +224,7 @@ export default function RoomScreen({ route, navigation }) {
   const statusLabel = {
     connecting: 'Connecting\u2026',
     waiting: 'Waiting for host\u2026',
+    lobby: 'Waiting for host to start\u2026',
     connected: 'Connected',
     pending: 'Waiting for host to admit you\u2026',
     failed: 'Connection failed',

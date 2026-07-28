@@ -21,6 +21,7 @@ export default function WhiteboardToolbar({
   strokeWidth,
   onStrokeWidthChange,
   isHost = true,
+  onOpenBoards,
 }) {
   const [hint, setHint] = useState(true)
   const [hintDismissed, setHintDismissed] = useState(false)
@@ -200,6 +201,16 @@ export default function WhiteboardToolbar({
               <polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
             </svg>
             Save
+          </button>
+        )}
+
+        {/* Saved boards (host + Business plan only) */}
+        {isHost && onOpenBoards && (
+          <button onClick={onOpenBoards} style={{ ...btnBase, background: 'rgba(15,23,42,0.85)', color: '#94a3b8' }} title="Saved boards">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+              <path d="M4 4h16v4H4z" /><path d="M4 12h16v8H4z" />
+            </svg>
+            Boards
           </button>
         )}
 

@@ -1,11 +1,5 @@
 import { getToken } from './auth.js'
-
-const API_BASE = import.meta.env.VITE_SERVER_URL || ''
-
-function apiUrl(path) {
-  if (!API_BASE) return path
-  return `${API_BASE.replace(/\/$/, '')}${path}`
-}
+import { apiUrl } from './api.js'
 
 export async function createSession(options = {}) {
   const token = await getToken()
@@ -14,6 +8,11 @@ export async function createSession(options = {}) {
     maxGuests: options.maxGuests || null,
     joinMode: options.joinMode || 'open',
     durationMinutes: options.durationMinutes || 120,
+    // Pre-launch lobby (docs/pre-launch-lobby-plan.md): scheduled:true
+    // creates the room with started:false server-side, so the creator
+    // lands in a lobby view instead of a live call until they explicitly
+    // start it.
+    scheduled: !!options.scheduled,
   }
   const headers = { 'Content-Type': 'application/json' }
   if (token) headers['Authorization'] = `Bearer ${token}`
@@ -35,7 +34,7 @@ export async function verifySession(sessionId) {
   const res = await fetch(apiUrl(`/session/${sessionId}?token=${encodeURIComponent(token || '')}`))
   if (!res.ok) return { ok: false }
   const data = await res.json()
-  return { ok: true, locked: !!data.locked, joinMode: data.joinMode || 'open', durationMinutes: data.durationMinutes || 120, sessionName: data.sessionName || '' }
+  return { ok: true, locked: !!data.locked, joinMode: data.joinMode || 'open', durationMinutes: data.durationMinutes || 120, sessionName: data.sessionName || '', started: data.started !== false }
 }
 
 export async function resolveJoinCode(code) {
@@ -57,7 +56,7 @@ export function getPublicOrigin() {
   if (envUrl) return Promise.resolve(envUrl)
   const { hostname } = window.location
   if (hostname !== 'localhost' && hostname !== '127.0.0.1') return Promise.resolve(window.location.origin)
-  return fetch('/public-host')
+  return fetch(apiUrl('/public-host'))
     .then((r) => r.json())
     .then((d) => d?.origin || window.location.origin)
     .catch(() => window.location.origin)

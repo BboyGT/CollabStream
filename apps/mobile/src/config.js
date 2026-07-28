@@ -1,6 +1,15 @@
-// Fill in your computer's LAN IP address below.
-// Run ipconfig (Windows) or ifconfig (Mac/Linux) and use the IPv4 address.
-// Example: 192.168.1.42
+const DEFAULT_SERVER_URL = 'http://localhost:3001'
 
-export const SERVER_URL = 'http://192.168.1.x:3001'
-export const WS_URL = 'ws://192.168.1.x:3001/ws'
+function trimSlash(value) {
+  return String(value || '').replace(/\/$/, '')
+}
+
+const configuredServerUrl = trimSlash(
+  process.env.EXPO_PUBLIC_SERVER_URL ||
+  process.env.REACT_NATIVE_SERVER_URL ||
+  DEFAULT_SERVER_URL
+)
+
+export const SERVER_URL = configuredServerUrl
+export const WS_URL = configuredServerUrl.replace(/^http/, 'ws') + '/ws'
+export const NEEDS_SERVER_CONFIG = configuredServerUrl === DEFAULT_SERVER_URL

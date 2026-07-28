@@ -5,6 +5,17 @@ export default function InviteModal({ open, onClose, joinCode, shortCode, joinUr
   const [qr, setQr] = useState(null)
   const [lanQr, setLanQr] = useState(null)
   const [ngrokTip, setNgrokTip] = useState(false)
+  // Self-contained copy feedback ("Copy code" → "Copied!" → back), since
+  // this modal is reused from multiple places and previously gave zero
+  // indication a click actually worked — clipboard writes are silent and
+  // async, so without this a failed copy (e.g. clipboard permission denied)
+  // looked identical to a successful one.
+  const [copiedKey, setCopiedKey] = useState(null)
+  function copyWithFeedback(key, text) {
+    navigator.clipboard.writeText(text || '')
+      .then(() => { setCopiedKey(key); setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 1500) })
+      .catch(() => {})
+  }
   const safeJoinUrl = typeof joinUrl === 'string' ? joinUrl : ''
   const safeLanUrl = typeof lanUrl === 'string' ? lanUrl : ''
 
@@ -56,20 +67,20 @@ export default function InviteModal({ open, onClose, joinCode, shortCode, joinUr
         <div className="flex items-center justify-between mb-2">
           <div className="text-slate-200 font-mono text-lg tracking-wider">{joinCode || '\u2014'}</div>
           <button
-            onClick={() => navigator.clipboard.writeText(joinCode || '')}
-            className="px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 text-xs font-mono hover:bg-slate-800"
+            onClick={() => copyWithFeedback('code', joinCode || '')}
+            className={`px-2 py-1 rounded border text-xs font-mono transition-colors ${copiedKey === 'code' ? 'bg-emerald-950 border-emerald-700 text-emerald-300' : 'bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800'}`}
           >
-            Copy code
+            {copiedKey === 'code' ? 'Copied!' : 'Copy code'}
           </button>
         </div>
         {shortCode && shortCode !== joinCode && (
           <div className="flex items-center justify-between mb-3">
             <div className="text-slate-200 font-mono text-lg tracking-wider">{shortCode}</div>
             <button
-              onClick={() => navigator.clipboard.writeText(shortCode || '')}
-              className="px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 text-xs font-mono hover:bg-slate-800"
+              onClick={() => copyWithFeedback('short', shortCode || '')}
+              className={`px-2 py-1 rounded border text-xs font-mono transition-colors ${copiedKey === 'short' ? 'bg-emerald-950 border-emerald-700 text-emerald-300' : 'bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800'}`}
             >
-              Copy short
+              {copiedKey === 'short' ? 'Copied!' : 'Copy short'}
             </button>
           </div>
         )}
@@ -160,10 +171,10 @@ export default function InviteModal({ open, onClose, joinCode, shortCode, joinUr
         )}
 
         <button
-          onClick={() => navigator.clipboard.writeText(activeUrl || '')}
-          className="w-full px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 text-xs font-mono hover:bg-slate-800"
+          onClick={() => copyWithFeedback('link', activeUrl || '')}
+          className={`w-full px-3 py-2 rounded-lg border text-xs font-mono transition-colors ${copiedKey === 'link' ? 'bg-emerald-950 border-emerald-700 text-emerald-300' : 'bg-slate-900 border-slate-700 text-slate-200 hover:bg-slate-800'}`}
         >
-          Copy link
+          {copiedKey === 'link' ? 'Copied!' : 'Copy link'}
         </button>
       </div>
     </div>

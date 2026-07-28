@@ -43,6 +43,16 @@ const useSession = create((set, get) => ({
   // Spotlight
   spotlight: null,
 
+  // Floor mode — one guest can be granted the floor at a time so everyone
+  // (not just the host) can hear them. remoteFloorAudioStream is the
+  // separate, second incoming audio stream (guest-side only, distinct from
+  // remoteStream which always carries the host). floorPeerId/floorPeerName
+  // are used by both host and guest UIs to show "who has the floor" — see
+  // docs/floor-mode-plan.md.
+  remoteFloorAudioStream: null,
+  floorPeerId: null,
+  floorPeerName: null,
+
   // Branding (Phase F)
   branding: { logoUrl: null, accentColor: '#22d3ee' },
 
@@ -74,6 +84,8 @@ const useSession = create((set, get) => ({
   setControlGranted: (v) => set({ controlGranted: v }),
   setControlToken: (t) => set({ controlToken: t }),
   setSpotlight: (s) => set({ spotlight: s }),
+  setRemoteFloorAudioStream: (s) => set({ remoteFloorAudioStream: s }),
+  setFloor: (peerId, name) => set({ floorPeerId: peerId, floorPeerName: peerId ? (name || null) : null }),
   setBranding: (b) => set({ branding: b }),
   setUserPlan: (p) => set({ userPlan: p }),
   stopLocalMedia: () => {
@@ -90,6 +102,7 @@ const useSession = create((set, get) => ({
     remoteScreenStreamId: null, remoteMeta: null, audioMuted: false, remoteAudioMuted: false,
     annotationColor: '#ef4444', annotationSize: 3, annotationTool: 'pen',
     companionConnected: false, controlGranted: false, controlToken: null, spotlight: null,
+    remoteFloorAudioStream: null, floorPeerId: null, floorPeerName: null,
   }),
 }))
 

@@ -5,7 +5,9 @@
   "identifier": "com.collabstream.companion",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:1420"
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run vite:dev",
+    "beforeBuildCommand": "npm run vite:build"
   },
   "app": {
     "windows": [

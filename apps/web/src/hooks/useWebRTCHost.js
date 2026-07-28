@@ -10,6 +10,15 @@ export default function useWebRTCHost({ localStream, screenStream, onDataChannel
   // events fire before either async createPC call resolves (race condition).
   const pendingRef = useRef(new Map()) // peerId -> Promise<RTCPeerConnection>
 
+  // Floor mode (see docs/floor-mode-plan.md): floorTracksRef holds each
+  // guest's inbound mic track as it arrives, so it's available to relay
+  // later if that guest is ever granted the floor. floorStateRef tracks
+  // who currently holds it and, for each *other* guest, the RTCRtpSender
+  // created to relay that audio to them — needed so it can be cleanly
+  // removed again on revoke/reassign/disconnect.
+  const floorTracksRef = useRef(new Map()) // peerId -> inbound audio MediaStreamTrack
+  const floorStateRef = useRef({ peerId: null, senders: new Map() }) // senders: targetPeerId -> RTCRtpSender
+
   const setSignalSend = useCallback((fn) => {
     signalingRef.current = fn
   }, [])
@@ -24,6 +33,23 @@ export default function useWebRTCHost({ localStream, screenStream, onDataChannel
 
     if (localStream) localStream.getTracks().forEach((t) => pc.addTrack(t, localStream))
     if (screenStream) screenStream.getTracks().forEach((t) => pc.addTrack(t, screenStream))
+
+    // Late-joiner floor relay: if someone already holds the floor by the
+    // time this new guest connects, include that audio track from the
+    // start rather than waiting for the next grant/revoke cycle to pick
+    // them up — otherwise a guest who joins mid-floor never hears the
+    // current speaker until something else changes the floor state.
+    if (floorStateRef.current.peerId && floorStateRef.current.peerId !== peerId) {
+      const floorTrack = floorTracksRef.current.get(floorStateRef.current.peerId)
+      if (floorTrack) {
+        try {
+          const sender = pc.addTrack(floorTrack, new MediaStream([floorTrack]))
+          floorStateRef.current.senders.set(peerId, sender)
+        } catch (err) {
+          console.warn('[floor] failed to include floor track for late joiner', peerId, err)
+        }
+      }
+    }
 
     const annotation = pc.createDataChannel('annotation', { ordered: true })
     const control = pc.createDataChannel('control', { ordered: false, maxRetransmits: 0 })
@@ -49,6 +75,9 @@ export default function useWebRTCHost({ localStream, screenStream, onDataChannel
     pc.ontrack = (e) => {
       const [stream] = e.streams
       if (stream) onPeerStream?.(peerId, stream, e.track)
+      // Keep a reference to this guest's own inbound mic track so it's
+      // available to relay to others later if they're granted the floor.
+      if (e.track?.kind === 'audio') floorTracksRef.current.set(peerId, e.track)
     }
 
     pc.onicecandidate = (e) => {
@@ -194,6 +223,51 @@ export default function useWebRTCHost({ localStream, screenStream, onDataChannel
     })
   }, [])
 
+  // Removes the current floor relay from every other guest's connection.
+  // Safe to call when nothing is granted (no-op). Declared before
+  // closePeer/grantFloor since both reference it.
+  const revokeFloor = useCallback(() => {
+    const { senders } = floorStateRef.current
+    senders.forEach((sender, targetPeerId) => {
+      const pc = pcsRef.current.get(targetPeerId)
+      if (pc && pc.signalingState !== 'closed') {
+        try { pc.removeTrack(sender) } catch (err) { console.warn('[floor] removeTrack failed', targetPeerId, err) }
+      }
+    })
+    floorStateRef.current = { peerId: null, senders: new Map() }
+  }, [])
+
+  // Grants the floor to peerId: relays their already-inbound audio track
+  // out to every OTHER connected guest. Revokes any existing floor holder
+  // first (only one at a time — see docs/floor-mode-plan.md). Returns
+  // false if that guest's audio track hasn't arrived yet (e.g. granted
+  // immediately after they connect, before negotiation finished) so the
+  // caller can retry or show an error rather than silently doing nothing.
+  const grantFloor = useCallback((peerId) => {
+    if (floorStateRef.current.peerId === peerId) return true // already granted, no-op
+    revokeFloor()
+    const track = floorTracksRef.current.get(peerId)
+    if (!track) {
+      console.warn(`[floor] no audio track yet for peer ${peerId}, cannot grant floor`)
+      return false
+    }
+    const senders = new Map()
+    pcsRef.current.forEach((pc, targetPeerId) => {
+      if (targetPeerId === peerId) return // don't relay a guest's own audio back to themselves
+      if (pc.signalingState === 'closed') return
+      try {
+        const sender = pc.addTrack(track, new MediaStream([track]))
+        senders.set(targetPeerId, sender)
+      } catch (err) {
+        console.warn(`[floor] failed to relay to ${targetPeerId}`, err)
+      }
+    })
+    floorStateRef.current = { peerId, senders }
+    return true
+  }, [revokeFloor])
+
+  const getFloorPeerId = useCallback(() => floorStateRef.current.peerId, [])
+
   const closePeer = useCallback((peerId) => {
     const pc = pcsRef.current.get(peerId)
     if (pc) {
@@ -205,7 +279,19 @@ export default function useWebRTCHost({ localStream, screenStream, onDataChannel
     })
     pcsRef.current.delete(peerId)
     channelsRef.current.delete(peerId)
-  }, [])
+    floorTracksRef.current.delete(peerId)
+    // If the peer who just disconnected held the floor, tear down the
+    // relay to everyone else rather than leaving dangling senders pointing
+    // at a now-closed PC/dead track.
+    if (floorStateRef.current.peerId === peerId) {
+      revokeFloor()
+    } else {
+      // If they were merely a relay *target* (receiving someone else's
+      // floor audio), just drop the bookkeeping entry — their PC and its
+      // senders are already gone via pc.close() above.
+      floorStateRef.current.senders.delete(peerId)
+    }
+  }, [revokeFloor])
 
   const setRemoteAudio = useCallback((peerId, enabled) => {
     const pc = pcsRef.current.get(peerId)
@@ -238,5 +324,5 @@ export default function useWebRTCHost({ localStream, screenStream, onDataChannel
     pendingRef.current.clear()
   }, [])
 
-  return { handleSignal, setSignalSend, sendToPeer, broadcast, addScreenTrack, closePeer, setRemoteAudio, createPC, getStats }
+  return { handleSignal, setSignalSend, sendToPeer, broadcast, addScreenTrack, closePeer, setRemoteAudio, createPC, getStats, grantFloor, revokeFloor, getFloorPeerId }
 }

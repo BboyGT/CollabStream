@@ -10,6 +10,7 @@ export default function ScreenView({
   annotationHandlers,
   muted = true,
   fit = 'contain',
+  label = null,
 }) {
   const internalVideoRef = useRef(null)
   const videoRef = externalVideoRef || internalVideoRef
@@ -61,6 +62,19 @@ export default function ScreenView({
           <p className="text-slate-500 text-sm font-mono">
             {mode === 'view' ? 'Waiting for host to share screen…' : 'No screen share'}
           </p>
+        </div>
+      )}
+
+      {/* Name label — ScreenView is used both for actual screen shares and
+          for a spotlighted/focused guest's plain webcam video (see
+          HostRoom.jsx's `hasScreen || focusedGuestVideo` branch). Unlike
+          VideoTile/VideoFeed, which always show a name corner-label, this
+          component previously had no way to show one at all — so bringing
+          a guest into the main viewing area silently dropped their name
+          entirely, even though the small tile grid below still showed it. */}
+      {label && (
+        <div className="absolute bottom-3 left-3 px-2.5 py-1 rounded-full bg-black/60 border border-white/10 text-slate-100 text-xs font-mono z-20">
+          {label}
         </div>
       )}
 

@@ -1,17 +1,29 @@
 import { useEffect, useRef, useState } from 'react'
 
 function getInitials(name) {
-  if (!name) return '??'
+  if (!name) return '?'
   const parts = name.trim().split(/\s+/).slice(0, 2)
-  return parts.map((p) => p[0]?.toUpperCase()).join('') || '??'
+  return parts.map((p) => p[0]?.toUpperCase()).join('') || '?'
 }
 
-export default function VideoFeed({ stream, label, name, muted = false, corner = 'br', inline = false }) {
+// Keeps a dragged tile's position within the current viewport. Without this,
+// once dragged even once the tile switches to fixed pixel coordinates
+// permanently (see the drag handlers below) — resizing the window smaller,
+// or rotating a phone, afterward could leave it stuck off-screen with no
+// way back short of a page reload.
+function clampPos(x, y, w, h) {
+  const maxX = Math.max(0, window.innerWidth - w)
+  const maxY = Math.max(0, window.innerHeight - h)
+  return { x: Math.min(Math.max(x, 0), maxX), y: Math.min(Math.max(y, 0), maxY) }
+}
+
+export default function VideoFeed({ stream, label, name, muted = false, corner = 'br', inline = false, draggable = true }) {
   const videoRef = useRef(null)
+  const containerRef = useRef(null)
   const [pos, setPos] = useState(null)
   const [videoOff, setVideoOff] = useState(false)
   const dragging = useRef(false)
-  const dragStart = useRef({ mx: 0, my: 0, px: 0, py: 0 })
+  const dragStart = useRef({ mx: 0, my: 0, px: 0, py: 0, w: 0, h: 0 })
 
   useEffect(() => {
     if (videoRef.current && stream) {
@@ -42,20 +54,38 @@ export default function VideoFeed({ stream, label, name, muted = false, corner =
     }
   }, [stream])
 
+  // Re-clamp on window resize so a previously-dragged tile can't get
+  // stranded outside the viewport when the window shrinks or the device
+  // rotates. Only acts once the tile has actually been dragged (pos set) —
+  // undragged tiles are positioned by CSS classes and don't need this.
+  useEffect(() => {
+    function onResize() {
+      setPos((p) => {
+        if (!p || !containerRef.current) return p
+        const rect = containerRef.current.getBoundingClientRect()
+        return clampPos(p.x, p.y, rect.width, rect.height)
+      })
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
   function onMouseDown(e) {
+    if (!draggable) return
     dragging.current = true
     const rect = e.currentTarget.getBoundingClientRect()
-    dragStart.current = { mx: e.clientX, my: e.clientY, px: rect.left, py: rect.top }
+    dragStart.current = { mx: e.clientX, my: e.clientY, px: rect.left, py: rect.top, w: rect.width, h: rect.height }
     window.addEventListener('mousemove', onMouseMove)
     window.addEventListener('mouseup', onMouseUp)
   }
 
   function onTouchStart(e) {
+    if (!draggable) return
     const touch = e.touches[0]
     if (!touch) return
     dragging.current = true
     const rect = e.currentTarget.getBoundingClientRect()
-    dragStart.current = { mx: touch.clientX, my: touch.clientY, px: rect.left, py: rect.top }
+    dragStart.current = { mx: touch.clientX, my: touch.clientY, px: rect.left, py: rect.top, w: rect.width, h: rect.height }
     window.addEventListener('touchmove', onTouchMove, { passive: false })
     window.addEventListener('touchend', onTouchEnd)
   }
@@ -67,7 +97,7 @@ export default function VideoFeed({ stream, label, name, muted = false, corner =
     e.preventDefault()
     const dx = touch.clientX - dragStart.current.mx
     const dy = touch.clientY - dragStart.current.my
-    setPos({ x: dragStart.current.px + dx, y: dragStart.current.py + dy })
+    setPos(clampPos(dragStart.current.px + dx, dragStart.current.py + dy, dragStart.current.w, dragStart.current.h))
   }
 
   function onTouchEnd() {
@@ -80,7 +110,7 @@ export default function VideoFeed({ stream, label, name, muted = false, corner =
     if (!dragging.current) return
     const dx = e.clientX - dragStart.current.mx
     const dy = e.clientY - dragStart.current.my
-    setPos({ x: dragStart.current.px + dx, y: dragStart.current.py + dy })
+    setPos(clampPos(dragStart.current.px + dx, dragStart.current.py + dy, dragStart.current.w, dragStart.current.h))
   }
 
   function onMouseUp() {
@@ -102,10 +132,11 @@ export default function VideoFeed({ stream, label, name, muted = false, corner =
 
   return (
     <div
+      ref={containerRef}
       onMouseDown={onMouseDown}
       onTouchStart={onTouchStart}
       style={style}
-      className={`${pos ? '' : (inline ? 'relative' : `absolute ${defaultPos}`)} w-32 h-24 sm:w-40 sm:h-28 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 cursor-grab active:cursor-grabbing shadow-xl z-50 group touch-none`}
+      className={`${pos ? '' : (inline ? 'relative' : `absolute ${defaultPos}`)} w-32 h-24 sm:w-40 sm:h-28 rounded-xl overflow-hidden border border-slate-700 bg-slate-900 shadow-xl z-50 group touch-none ${draggable ? 'cursor-grab active:cursor-grabbing' : ''}`}
     >
       {stream && !videoOff ? (
         <video

@@ -5,10 +5,17 @@ import useSession from '../store/session.js'
 export default function useWebRTC({ role, localStream, screenStream, onDataChannel, onMessage, allowGuestOffers = false }) {
   const pcRef = useRef(null)
   const dataChannels = useRef({}) // { annotation, control }
-  const { setRemoteStream, setRemoteScreenStream, setRemoteMeta, setPeerConnected, remoteScreenStreamId } = useSession()
+  const { setRemoteStream, setRemoteScreenStream, setRemoteMeta, setPeerConnected, remoteScreenStreamId, setRemoteFloorAudioStream } = useSession()
   const signalingRef = useRef(null)
   const makingOfferRef = useRef(false)
   const lastScreenIdRef = useRef(null)
+  // Floor mode (see docs/floor-mode-plan.md): set to the peerId we were
+  // just told (via a 'floor-grant' data-channel message) is about to start
+  // relaying audio to us, so the next incoming audio-only track can be
+  // routed to remoteFloorAudioStream instead of being silently dropped or
+  // mistaken for the host's own stream. See the ontrack audio handling
+  // below — this is what fixes that.
+  const expectingFloorPeerRef = useRef(null)
 
   const setSignalSend = useCallback((fn) => {
     signalingRef.current = fn
@@ -100,6 +107,17 @@ export default function useWebRTC({ role, localStream, screenStream, onDataChann
 
       if (track.kind === 'audio') {
         const hasVideo = stream.getVideoTracks?.().length > 0
+        // Floor mode: if we were just told to expect a relayed track from
+        // the current floor holder, this audio-only stream is it — route
+        // it to its own separate piece of state rather than the guard
+        // below, which used to silently drop any second audio stream once
+        // remoteStream (the host's) was already set. See the comment on
+        // expectingFloorPeerRef above and docs/floor-mode-plan.md.
+        if (expectingFloorPeerRef.current && !hasVideo) {
+          setRemoteFloorAudioStream(stream)
+          expectingFloorPeerRef.current = null
+          return
+        }
         const current = useSession.getState().remoteStream
         if (!current || hasVideo) {
           setRemoteStream(stream)
@@ -144,7 +162,7 @@ export default function useWebRTC({ role, localStream, screenStream, onDataChann
     }
 
     return pc
-  }, [role, localStream, screenStream, signal, setRemoteStream, setPeerConnected, onDataChannel])
+  }, [role, localStream, screenStream, signal, setRemoteStream, setRemoteFloorAudioStream, setPeerConnected, onDataChannel])
 
   function setupDataChannel(ch, label) {
     ch.onmessage = (e) => {
@@ -249,8 +267,9 @@ export default function useWebRTC({ role, localStream, screenStream, onDataChann
       setPeerConnected(false)
       setRemoteStream(null)
       setRemoteScreenStream(null)
+      setRemoteFloorAudioStream(null)
     }
-  }, [setPeerConnected, setRemoteStream, setRemoteScreenStream])
+  }, [setPeerConnected, setRemoteStream, setRemoteScreenStream, setRemoteFloorAudioStream])
 
   const getStats = useCallback(async () => {
     const pc = pcRef.current
@@ -258,5 +277,19 @@ export default function useWebRTC({ role, localStream, screenStream, onDataChann
     try { return await pc.getStats() } catch { return null }
   }, [])
 
-  return { handleSignal, sendData, setSignalSend, addScreenTrack, getStats, renegotiate }
+  // Floor mode (see docs/floor-mode-plan.md): call when a 'floor-grant'
+  // message names this peer as the new speaker, so the next audio-only
+  // ontrack event is correctly identified and routed instead of dropped.
+  const prepareFloorAudio = useCallback((peerId) => {
+    expectingFloorPeerRef.current = peerId
+  }, [])
+
+  // Call when 'floor-revoke' arrives (or the floor moves to someone else)
+  // to stop playing the previous floor audio and clear the expectation flag.
+  const clearFloorAudio = useCallback(() => {
+    expectingFloorPeerRef.current = null
+    setRemoteFloorAudioStream(null)
+  }, [setRemoteFloorAudioStream])
+
+  return { handleSignal, sendData, setSignalSend, addScreenTrack, getStats, renegotiate, prepareFloorAudio, clearFloorAudio }
 }

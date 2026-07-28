@@ -12,15 +12,19 @@ import {
   StatusBar,
 } from 'react-native'
 import RoomScreen from './src/RoomScreen'
-import { SERVER_URL } from './src/config'
+import { NEEDS_SERVER_CONFIG, SERVER_URL } from './src/config'
 
 const MONO = Platform.OS === 'ios' ? 'Menlo' : 'monospace'
 
-function JoinScreen({ onJoin }) {
+function JoinScreen({ onJoin, initialCode = '' }) {
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+
+  useEffect(() => {
+    if (initialCode) setCode(initialCode)
+  }, [initialCode])
 
   async function handleJoin() {
     const trimCode = code.trim()
@@ -30,6 +34,11 @@ function JoinScreen({ onJoin }) {
     setError(null)
     setLoading(true)
     try {
+      if (NEEDS_SERVER_CONFIG) {
+        setError('Set EXPO_PUBLIC_SERVER_URL to your computer LAN URL before joining.')
+        setLoading(false)
+        return
+      }
       const res = await fetch(`${SERVER_URL}/api/join/${trimCode}`)
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -113,6 +122,7 @@ function JoinScreen({ onJoin }) {
 export default function App() {
   const [screen, setScreen] = useState('join')
   const [roomParams, setRoomParams] = useState(null)
+  const [initialCode, setInitialCode] = useState('')
 
   // Handle deep links: collabstream://join/<code>
   useEffect(() => {
@@ -122,7 +132,8 @@ export default function App() {
       if (match) {
         // Pre-fill the code — user still needs to enter name
         // (We can't auto-join without a name, so we just note the code)
-        console.log('[deeplink] code:', match[1])
+        setInitialCode(match[1])
+        setScreen('join')
       }
     }
     const sub = Linking.addEventListener('url', handleUrl)
@@ -144,7 +155,7 @@ export default function App() {
     )
   }
 
-  return <JoinScreen onJoin={handleJoin} />
+  return <JoinScreen onJoin={handleJoin} initialCode={initialCode} />
 }
 
 const styles = StyleSheet.create({

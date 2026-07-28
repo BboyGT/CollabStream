@@ -128,6 +128,37 @@ async function setRecordingUrl(sessionId, key) {
   if (error) console.error('[db] setRecordingUrl error:', error.message)
 }
 
+// Records the outcome of a single webhook delivery attempt — design idea
+// §3.3. Best-effort like everything else in this file: a logging failure
+// must never take down the delivery itself, so callers should not await
+// this in a way that blocks the response to the host.
+async function logWebhookDelivery(webhookId, hostId, event, statusCode, ok, errorMessage) {
+  if (!supabase) return
+  const { error } = await supabase.from('webhook_deliveries').insert({
+    webhook_id: webhookId,
+    host_id: hostId || null,
+    event,
+    status_code: statusCode ?? null,
+    ok: !!ok,
+    error: errorMessage || null,
+  })
+  if (error) console.error('[db] logWebhookDelivery error:', error.message)
+}
+
+// Returns the most recent delivery attempts for one webhook, newest first.
+async function getWebhookDeliveries(webhookId, hostId, limit = 50) {
+  if (!supabase) return []
+  const { data, error } = await supabase
+    .from('webhook_deliveries')
+    .select('*')
+    .eq('webhook_id', webhookId)
+    .eq('host_id', hostId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) console.error('[db] getWebhookDeliveries error:', error.message)
+  return data || []
+}
+
 module.exports = {
   createSessionRecord,
   endSessionRecord,
@@ -138,4 +169,6 @@ module.exports = {
   pruneOldData,
   getStats,
   setRecordingUrl,
+  logWebhookDelivery,
+  getWebhookDeliveries,
 }

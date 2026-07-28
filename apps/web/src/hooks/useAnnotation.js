@@ -89,6 +89,23 @@ export default function useAnnotation(canvasRef, pointerRef, sendData, role) {
       return
     }
 
+    // ── Text stamp — kept in the same stroke-history array as everything
+    // else so it participates in undo, clear, and any resize-triggered
+    // redraw instead of vanishing the next time renderAll() runs (that was
+    // a real bug: text used to be painted directly to the canvas outside
+    // this history, so it silently disappeared the moment anyone drew a
+    // new stroke afterward, since renderAll() clears and repaints purely
+    // from strokesRef).
+    if (tool === 'text') {
+      const p = points[0]
+      const x = p.x * ctx.canvas.width
+      const y = p.y * ctx.canvas.height
+      ctx.font = `${16 * (size || 3) / 3}px monospace`
+      ctx.fillStyle = color
+      ctx.fillText(stroke.text || '', x, y)
+      return
+    }
+
     ctx.lineCap = 'round'
     ctx.lineJoin = 'round'
     ctx.lineWidth = tool === 'highlight' ? size * 6 : size * 2
@@ -253,6 +270,40 @@ export default function useAnnotation(canvasRef, pointerRef, sendData, role) {
     sendData?.('annotation', { type: 'undo', by: role })
   }, [sendData, role])
 
+  // Adds a text stamp through the normal stroke-history pipeline (see the
+  // 'text' case in drawStroke above) instead of painting it directly, and
+  // sends it over the wire using the exact same {type:'stroke', action:
+  // 'commit', stroke} shape pen/rect/arrow already use — so the existing
+  // handleRemoteDraw on the receiving end needs no new message type to
+  // understand it.
+  const addTextStamp = useCallback((x, y, text, color, size) => {
+    if (!text?.trim()) return
+    const stroke = { by: role, tool: 'text', color, size, text, points: [{ x, y }] }
+    strokesRef.current.push(stroke)
+    renderAll()
+    sendData?.('annotation', { type: 'stroke', action: 'commit', stroke })
+  }, [sendData, role])
+
+  // Re-paints the canvas from the current stroke history. Exposed so
+  // callers that resize the canvas element (which always clears its pixel
+  // buffer as a side effect — a real bug otherwise: resizing the browser
+  // window while drawing silently wiped everything from view, since
+  // nothing repainted from strokesRef afterward) can restore what was
+  // there.
+  const redraw = useCallback(() => { renderAll() }, [canvasRef])
+
+  // Persistent whiteboards (design idea §3.1 follow-up — the backend for
+  // this already existed with zero UI; see docs/floor-mode-plan.md).
+  // getStrokes exports the current stroke history for saving; loadStrokes
+  // replaces it wholesale (e.g. when a host loads a previously-saved
+  // board) and repaints.
+  const getStrokes = useCallback(() => strokesRef.current, [])
+  const loadStrokes = useCallback((strokes) => {
+    strokesRef.current = Array.isArray(strokes) ? strokes : []
+    previewRef.current = null
+    renderAll()
+  }, [])
+
   return {
     onPointerDown,
     onPointerMove,
@@ -261,5 +312,9 @@ export default function useAnnotation(canvasRef, pointerRef, sendData, role) {
     clearCanvas,
     clearCanvasLocal,
     undo,
+    addTextStamp,
+    redraw,
+    getStrokes,
+    loadStrokes,
   }
 }

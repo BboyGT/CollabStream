@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import { getAdminToken, setAdminToken, getAuthStatus } from '../lib/auth.js'
+import { apiUrl } from '../lib/api.js'
 
 export default function AdminDashboard() {
-  const [token, setTokenState] = useState(() => getAdminToken() || 'admin')
+  const [token, setTokenState] = useState(() => getAdminToken())
   const [sessions, setSessions] = useState([])
   const [audit, setAudit] = useState({})
   const [error, setError] = useState(null)
@@ -19,7 +20,9 @@ export default function AdminDashboard() {
   async function loadSessions() {
     setError(null)
     try {
-      const res = await fetch(`/admin/sessions?token=${encodeURIComponent(token)}&limit=100`)
+      const res = await fetch(apiUrl(`/admin/sessions?limit=100`), {
+        headers: { Authorization: `Bearer ${token}` },
+      })
       if (!res.ok) throw new Error('forbidden')
       const data = await res.json()
       setSessions(data.sessions || [])
@@ -30,7 +33,9 @@ export default function AdminDashboard() {
 
   async function loadRetention() {
     try {
-      const res = await fetch(`/admin/retention?token=${encodeURIComponent(token)}`)
+      const res = await fetch(apiUrl(`/admin/retention`), {
+        headers: { Authorization: `Bearer ${token}` },
+      })
       if (!res.ok) return
       const data = await res.json()
       setRetention(data.days || 30)
@@ -41,9 +46,9 @@ export default function AdminDashboard() {
   async function updateRetention() {
     const days = Number(retentionInput)
     if (!Number.isFinite(days) || days < 1) return
-    const res = await fetch(`/admin/retention?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(apiUrl(`/admin/retention`), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ days }),
     })
     if (res.ok) {
@@ -53,19 +58,26 @@ export default function AdminDashboard() {
   }
 
   async function loadAudit(sessionId) {
-    const res = await fetch(`/admin/sessions/${sessionId}/audit?token=${encodeURIComponent(token)}`)
+    const res = await fetch(apiUrl(`/admin/sessions/${sessionId}/audit`), {
+      headers: { Authorization: `Bearer ${token}` },
+    })
     if (!res.ok) return
     const data = await res.json()
     setAudit((a) => ({ ...a, [sessionId]: data.events || [] }))
   }
 
   async function endSession(sessionId) {
-    await fetch(`/admin/sessions/${sessionId}/end?token=${encodeURIComponent(token)}`, { method: 'POST' })
+    await fetch(apiUrl(`/admin/sessions/${sessionId}/end`), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+    })
     loadSessions()
   }
 
   async function loadStats() {
-    const res = await fetch(`/admin/stats?token=${encodeURIComponent(token)}`)
+    const res = await fetch(apiUrl(`/admin/stats`), {
+      headers: { Authorization: `Bearer ${token}` },
+    })
     if (!res.ok) return
     const data = await res.json()
     setStats(data)

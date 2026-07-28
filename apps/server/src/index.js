@@ -5,6 +5,7 @@ const express = require('express')
 const cors = require('cors')
 const dns = require('dns').promises
 const http = require('http')
+const https = require('https')
 const net = require('net')
 const os = require('os')
 const multer = require('multer')
@@ -12,13 +13,15 @@ const { WebSocketServer } = require('ws')
 const { customAlphabet } = require('nanoid')
 const {
   createRoom, getRoom, getRoomByJoinCode, verifyToken,
+  issueGuestToken, isIpBanned,
   setLocked, setGuestCap, getAudit, cleanupRooms, getGuests, getGuestCount,
-  endRoom,
+  endRoom, setLifecycleHandlers,
 } = require('./rooms')
 const {
-  createSessionRecord, endSessionRecord, addAuditEvent,
+  createSessionRecord, endSessionRecord,
   listSessionHistory, getAuditTrail, getDashboardStats,
   pruneOldData, getStats, setRecordingUrl,
+  logWebhookDelivery, getWebhookDeliveries,
 } = require('./db')
 const { handleMessage, handleClose } = require('./relay')
 const { supabase } = require('./supabase')
@@ -207,7 +210,12 @@ async function validateWebhookUrl(rawUrl) {
     throw new Error('webhook url resolves to a private address')
   }
 
-  return parsed.toString()
+  // Pin the IP we just validated. If we let the subsequent request re-resolve
+  // the hostname itself, an attacker controlling DNS for that hostname could
+  // return a public IP for this check and a private/internal IP microseconds
+  // later for the real connection (classic DNS-rebinding) — see AUDIT.md §2.5.
+  const pinned = records[0]
+  return { url: parsed.toString(), hostname: parsed.hostname, address: pinned.address, family: pinned.family }
 }
 
 async function requireAuth(req, res, next) {
@@ -233,21 +241,59 @@ function requirePlan(plan) {
   }
 }
 
+// Delivers a webhook POST to a specific, pre-validated IP address instead of
+// letting Node re-resolve the hostname (which is what defeats the DNS pin —
+// see AUDIT.md §2.5). TLS servername/Host still use the original hostname,
+// only the socket's destination address is forced to the validated IP.
+function postJsonPinned(hostname, address, family, path, body) {
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname,
+      // Node ignores `lookup`'s hostname arg and just needs an address+family
+      // back; forcing it here is what pins the connection.
+      lookup: (_host, _opts, cb) => cb(null, address, family || (net.isIPv6(address) ? 6 : 4)),
+      port: 443,
+      path: path || '/',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        'X-CollabStream-Event': JSON.parse(body).event,
+      },
+      timeout: 10_000,
+    }, (res) => {
+      res.resume() // drain response body, we don't need it
+      res.on('end', () => resolve(res.statusCode))
+    })
+    req.on('timeout', () => req.destroy(new Error('webhook request timed out')))
+    req.on('error', reject)
+    req.write(body)
+    req.end()
+  })
+}
+
 // ── Webhook helper ─────────────────────────────────────────────────────────────
 async function fireWebhook(hostId, event, payload) {
   if (!hostId || !supabase) return
   try {
     const { data: hooks } = await supabase
-      .from('webhooks').select('url').eq('host_id', hostId)
+      .from('webhooks').select('id, url').eq('host_id', hostId)
       .eq('active', true).contains('events', [event])
     if (!hooks?.length) return
+    const body = JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload })
     const results = await Promise.allSettled(hooks.map(async (h) => {
-      const url = await validateWebhookUrl(h.url)
-      return fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-CollabStream-Event': event },
-        body: JSON.stringify({ event, timestamp: new Date().toISOString(), ...payload }),
-      })
+      try {
+        const { hostname, address, family, url } = await validateWebhookUrl(h.url)
+        const parsed = new URL(url)
+        const statusCode = await postJsonPinned(hostname, address, family, parsed.pathname + parsed.search, body)
+        // Delivery log entry — design idea §3.3, visible to the host in
+        // Settings so a failed delivery isn't only a server-side console.warn.
+        logWebhookDelivery(h.id, hostId, event, statusCode, statusCode >= 200 && statusCode < 300)
+        return statusCode
+      } catch (err) {
+        logWebhookDelivery(h.id, hostId, event, null, false, err.message)
+        throw err
+      }
     }))
     results.forEach((result) => {
       if (result.status === 'rejected') {
@@ -258,6 +304,13 @@ async function fireWebhook(hostId, event, payload) {
     console.warn('[webhook] delivery skipped:', err.message)
   }
 }
+
+setLifecycleHandlers({
+  onGuestJoin: (hostId, sessionId, peerId, sessionName) =>
+    fireWebhook(hostId, 'guest.join', { sessionId, peerId, sessionName }),
+  onSessionEnd: (hostId, sessionId, sessionName) =>
+    fireWebhook(hostId, 'session.end', { sessionId, sessionName }),
+})
 
 // ── Utility ────────────────────────────────────────────────────────────────────
 function getLocalIps() {
@@ -296,7 +349,7 @@ app.get('/auth/status', async (req, res) => {
 
 // POST /session — create session (auth required, plan limits enforced)
 app.post('/session', requireAuth, async (req, res) => {
-  const { sessionName, maxGuests, joinMode, durationMinutes } = req.body || {}
+  const { sessionName, maxGuests, joinMode, durationMinutes, scheduled } = req.body || {}
 
   // Plan-enforced limits
   const limits = req.planLimits
@@ -313,7 +366,7 @@ app.post('/session', requireAuth, async (req, res) => {
   }
 
   const sessionId = nanoid()
-  const token = tokenid()
+  const hostToken = tokenid()
 
   let joinCode = nanoid(8)
   while (getRoomByJoinCode(joinCode)) joinCode = nanoid(8)
@@ -322,19 +375,26 @@ app.post('/session', requireAuth, async (req, res) => {
 
   const opts = {
     sessionName: String(sessionName || '').slice(0, 40),
+    hostId: req.user.id,
     maxGuests: effectiveMaxGuests,
     maxGuestLimit: limits.maxGuests || 20,
     hostPlan: req.plan,
     joinMode: ['open', 'approval', 'locked'].includes(joinMode) ? joinMode : 'open',
     durationMinutes: effectiveDuration,
+    // Pre-launch lobby (docs/pre-launch-lobby-plan.md): scheduled:true
+    // creates the room with started:false instead of immediately live —
+    // the client (AppLanding.jsx's "Schedule for later") still navigates
+    // the creator into the same HostRoom route as a normal session, but
+    // HostRoom renders a lobby view instead of the live call until the
+    // host explicitly starts it.
+    scheduled: !!scheduled,
   }
 
-  createRoom(sessionId, token, joinCode, shortCode, opts)
+  createRoom(sessionId, hostToken, joinCode, shortCode, opts)
   await createSessionRecord(sessionId, req.user.id, { ...opts, joinCode, shortCode })
-  await addAuditEvent(sessionId, 'session-created', { hostId: req.user.id })
-  await fireWebhook(req.user.id, 'session.start', { sessionId, sessionName: opts.sessionName })
+  if (!opts.scheduled) await fireWebhook(req.user.id, 'session.start', { sessionId, sessionName: opts.sessionName })
 
-  res.json({ sessionId, token, joinCode, shortCode, ...opts })
+  res.json({ sessionId, token: hostToken, joinCode, shortCode, ...opts })
 })
 
 // GET /session/:id
@@ -342,13 +402,14 @@ app.get('/session/:sessionId', async (req, res) => {
   const room = getRoom(req.params.sessionId)
   if (!room) return res.status(404).json({ error: 'not-found' })
   const token = req.query.token
-  const isHost = token && verifyToken(req.params.sessionId, token)
+  const isHost = token && verifyToken(req.params.sessionId, token, 'host')
   res.json({
     ok: true, locked: room.locked, joinCode: isHost ? room.joinCode : undefined,
     shortCode: isHost ? room.shortCode : undefined,
     joinMode: room.joinMode, durationMinutes: room.durationMinutes || 120,
     sessionName: room.sessionName || '', maxGuests: room.maxGuests,
     guestCount: room.guests ? room.guests.size : 0,
+    started: room.started !== false,
   })
 })
 
@@ -373,11 +434,18 @@ app.get('/api/join/:code', (req, res) => {
   const room = getRoomByJoinCode(req.params.code)
   if (!room) return res.status(404).json({ error: 'not-found' })
   if (room.locked || room.joinMode === 'locked') return res.status(423).json({ error: 'room-locked' })
+  if (isIpBanned(room.sessionId, req.ip)) return res.status(403).json({ error: 'banned' })
+  // Mint a brand-new, individually-revocable token for this browser rather
+  // than handing out one shared secret — see design idea §3.1. Never
+  // return the host token here; this endpoint is hit by anyone with the
+  // public join link. See AUDIT.md §1.
+  const guestToken = issueGuestToken(room.sessionId, req.ip)
   res.json({
-    sessionId: room.sessionId, token: room.token, locked: room.locked,
+    sessionId: room.sessionId, token: guestToken, locked: room.locked,
     joinCode: room.joinCode, shortCode: room.shortCode,
     joinMode: room.joinMode, durationMinutes: room.durationMinutes || 120,
     sessionName: room.sessionName || '',
+    started: room.started !== false,
   })
 })
 
@@ -385,12 +453,15 @@ app.get('/join/:code', (req, res) => {
   const room = getRoomByJoinCode(req.params.code)
   if (!room) return res.status(404).json({ error: 'not-found' })
   if (room.locked || room.joinMode === 'locked') return res.status(423).json({ error: 'room-locked' })
-  res.json({ sessionId: room.sessionId, token: room.token, locked: room.locked, joinCode: room.joinCode, shortCode: room.shortCode, joinMode: room.joinMode, durationMinutes: room.durationMinutes || 120 })
+  if (isIpBanned(room.sessionId, req.ip)) return res.status(403).json({ error: 'banned' })
+  // Same per-browser token minting as /api/join/:code — see design idea §3.1.
+  const guestToken = issueGuestToken(room.sessionId, req.ip)
+  res.json({ sessionId: room.sessionId, token: guestToken, locked: room.locked, joinCode: room.joinCode, shortCode: room.shortCode, joinMode: room.joinMode, durationMinutes: room.durationMinutes || 120, started: room.started !== false })
 })
 
 app.post('/session/:sessionId/lock', async (req, res) => {
   const token = req.query.token
-  if (!verifyToken(req.params.sessionId, token)) return res.status(403).json({ error: 'invalid-token' })
+  if (!verifyToken(req.params.sessionId, token, 'host')) return res.status(403).json({ error: 'invalid-token' })
   const { locked } = req.body || {}
   const ok = setLocked(req.params.sessionId, !!locked)
   res.json({ ok })
@@ -398,7 +469,7 @@ app.post('/session/:sessionId/lock', async (req, res) => {
 
 app.patch('/session/:sessionId/cap', async (req, res) => {
   const token = req.query.token
-  if (!verifyToken(req.params.sessionId, token)) return res.status(403).json({ error: 'invalid-token' })
+  if (!verifyToken(req.params.sessionId, token, 'host')) return res.status(403).json({ error: 'invalid-token' })
   const maxGuests = req.body?.maxGuests === null ? null : Number(req.body?.maxGuests)
   const result = setGuestCap(req.params.sessionId, isNaN(maxGuests) ? null : maxGuests)
   if (result?.error) return res.status(400).json(result)
@@ -407,7 +478,7 @@ app.patch('/session/:sessionId/cap', async (req, res) => {
 
 app.get('/session/:sessionId/audit', async (req, res) => {
   const token = req.query.token
-  if (!verifyToken(req.params.sessionId, token)) return res.status(403).json({ error: 'invalid-token' })
+  if (!verifyToken(req.params.sessionId, token, 'host')) return res.status(403).json({ error: 'invalid-token' })
   const room = getRoom(req.params.sessionId)
   if (!hasPlan(room?.hostPlan || 'free', 'pro')) return res.status(403).json({ error: 'pro plan required' })
   const events = await getAuditTrail(req.params.sessionId)
@@ -438,6 +509,13 @@ app.get('/api/sessions/:sessionId/audit', requireAuth, requirePlan('pro'), async
 
 // ── Cloud recording (Business plan) ───────────────────────────────────────────
 app.post('/api/sessions/:sessionId/recording', requireAuth, requirePlan('business'), recordingUpload.single('file'), async (req, res) => {
+  // SECURITY: without this ownership check, any authenticated business-plan
+  // user could overwrite ANY session's recording_url by guessing/knowing
+  // another session's id — this was a real IDOR, found during a security
+  // review (this route is the odd one out; every other /api/sessions/:id
+  // route in this file already checks host_id). See AUDIT.md.
+  const { data: sess } = await supabase.from('sessions').select('host_id').eq('id', req.params.sessionId).single()
+  if (!sess || sess.host_id !== req.user.id) return res.status(404).json({ error: 'not-found' })
   if (!req.file) return res.status(400).json({ error: 'No file provided' })
   if (!/^video\/webm\b/.test(req.file.mimetype || '')) return res.status(415).json({ error: 'recording must be video/webm' })
   try {
@@ -454,7 +532,11 @@ app.post('/api/sessions/:sessionId/recording', requireAuth, requirePlan('busines
 })
 
 app.get('/api/sessions/:sessionId/recording', requireAuth, requirePlan('business'), async (req, res) => {
-  const { data: sess } = await supabase.from('sessions').select('recording_url').eq('id', req.params.sessionId).single()
+  // SECURITY: same IDOR class as the POST route above — without this check,
+  // any business-plan user could fetch a presigned download URL for ANY
+  // session's recording, not just their own.
+  const { data: sess } = await supabase.from('sessions').select('host_id, recording_url').eq('id', req.params.sessionId).single()
+  if (!sess || sess.host_id !== req.user.id) return res.status(404).json({ error: 'not-found' })
   if (!sess?.recording_url) return res.status(404).json({ error: 'No recording' })
   try {
     const url = await getRecordingUrl(sess.recording_url)
@@ -555,6 +637,15 @@ app.delete('/api/webhooks/:id', requireAuth, requirePlan('business'), async (req
   res.json({ ok: true })
 })
 
+// Delivery log for a single webhook — design idea §3.3. Ownership check
+// is via host_id in the query itself, same pattern as delete/CRUD above.
+app.get('/api/webhooks/:id/deliveries', requireAuth, requirePlan('business'), async (req, res) => {
+  const { data: hook } = await supabase.from('webhooks').select('id').eq('id', req.params.id).eq('host_id', req.user.id).single()
+  if (!hook) return res.status(404).json({ error: 'not-found' })
+  const deliveries = await getWebhookDeliveries(req.params.id, req.user.id)
+  res.json({ deliveries })
+})
+
 // ── Persistent Whiteboards (Business plan) ─────────────────────────────────────
 app.get('/api/whiteboards', requireAuth, requirePlan('business'), async (req, res) => {
   const { data } = await supabase.from('whiteboards').select('id, name, updated_at').eq('host_id', req.user.id).order('updated_at', { ascending: false })
@@ -588,17 +679,24 @@ app.delete('/api/whiteboards/:id', requireAuth, requirePlan('business'), async (
 })
 
 // ── Admin ──────────────────────────────────────────────────────────────────────
+// Admin token is read from the Authorization header, not a query param, so it
+// can't end up in access logs / browser history / Referer headers (AUDIT.md
+// §2.4). Every admin action is logged with the requesting IP and the route
+// hit so a leaked token's use can be distinguished from legitimate use.
 function requireAdminToken(req, res) {
   const expectedToken = process.env.ADMIN_TOKEN
   if (!expectedToken) {
     res.status(503).json({ error: 'admin-disabled' })
     return false
   }
-  const token = String(req.query.token || '')
-  if (token !== expectedToken) {
+  const header = req.headers.authorization || ''
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
+  if (!token || token !== expectedToken) {
     res.status(403).json({ error: 'forbidden' })
     return false
   }
+  const ip = req.ip || req.socket.remoteAddress || 'unknown'
+  console.warn(`[admin] ${new Date().toISOString()} ip=${ip} ${req.method} ${req.originalUrl}`)
   return true
 }
 
@@ -664,8 +762,10 @@ const server = http.createServer(app)
 const wss = new WebSocketServer({ server, path: '/ws' })
 const wsMap = new Map()
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   ws.isAlive = true
+  // Stashed for ban enforcement at register time — see design idea §3.1.
+  ws._ip = req.socket.remoteAddress
   ws.on('pong', () => { ws.isAlive = true })
   ws.on('message', (raw) => handleMessage(ws, raw, wsMap))
   ws.on('close', () => handleClose(ws, wsMap))

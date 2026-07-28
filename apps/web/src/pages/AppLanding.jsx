@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { createSession, resolveJoinCode } from '../lib/session.js'
 import CreatorSignature from '../components/CreatorSignature.jsx'
 import { getAuthStatus, getUser, signOut } from '../lib/auth.js'
@@ -47,7 +47,7 @@ function SessionSettingsModal({ open, onClose, onStart, loading, plan = 'free' }
     setDurationMins(plan === 'free' ? 45 : 0)
   }, [plan, limits.maxGuests])
 
-  function handleStart() {
+  function handleStart(scheduled = false) {
     const requestedCap = showCustomCap ? Number(customCap) : Number(maxGuests)
     const requestedDuration = totalMinutes || limits.durationMinutes
     onStart({
@@ -55,6 +55,11 @@ function SessionSettingsModal({ open, onClose, onStart, loading, plan = 'free' }
       maxGuests: Math.min(requestedCap || limits.maxGuests, limits.maxGuests),
       joinMode,
       durationMinutes: Math.min(requestedDuration, limits.durationMinutes),
+      // Pre-launch lobby (docs/pre-launch-lobby-plan.md): the only
+      // difference between the two buttons below is this flag — same
+      // settings modal, same createSession() call, just started:false vs
+      // started:true server-side.
+      scheduled,
     })
   }
 
@@ -120,10 +125,21 @@ function SessionSettingsModal({ open, onClose, onStart, loading, plan = 'free' }
             </div>
           </div>
         </div>
-        <div className="mt-6">
-          <button onClick={handleStart} disabled={loading}
+        <div className="mt-6 space-y-2">
+          <button onClick={() => handleStart(false)} disabled={loading}
             className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-500 text-slate-900 rounded-xl text-sm font-mono font-semibold transition-all">
-            {loading ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Creating session&hellip;</> : <>Start session <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg></>}
+            {loading ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />Creating session&hellip;</> : <>Start now <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg></>}
+          </button>
+          {/* Pre-launch lobby (docs/pre-launch-lobby-plan.md): creates the
+              exact same session with the exact same settings above, just
+              started:false — lands the creator in a lobby view where
+              invited guests can arrive early and chat before the call
+              actually begins. */}
+          <button onClick={() => handleStart(true)} disabled={loading}
+            title="Create the session now, but don't start the call yet — guests can arrive early and wait in a lobby"
+            className="w-full flex items-center justify-center gap-2 px-6 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 border border-slate-700 text-slate-300 rounded-xl text-xs font-mono transition-all">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>
+            Schedule for later
           </button>
         </div>
       </div>
@@ -206,8 +222,8 @@ export default function AppLanding() {
           <span className="font-mono text-sm font-medium text-slate-200 tracking-widest">CollabStream</span>
         </div>
         <div className="flex items-center gap-3">
-          <button onClick={() => navigate('/dashboard')} className="text-xs font-mono text-slate-400 hover:text-slate-200">Dashboard</button>
-          <button onClick={() => navigate('/settings')} className="text-xs font-mono text-slate-400 hover:text-slate-200">Settings</button>
+          <Link to="/dashboard" className="text-xs font-mono text-slate-400 hover:text-slate-200">Dashboard</Link>
+          <Link to="/settings" className="text-xs font-mono text-slate-400 hover:text-slate-200">Settings</Link>
           {userEmail && <span className="text-xs font-mono text-slate-500 hidden sm:block">{userEmail}</span>}
           <button onClick={async () => { await signOut(); navigate('/') }} className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 text-xs font-mono hover:bg-slate-800">Sign out</button>
         </div>

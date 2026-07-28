@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js'
+import { apiUrl } from './api.js'
 
 const ADMIN_TOKEN_KEY = 'collabstream_admin_token'
 
@@ -36,7 +37,7 @@ export async function getUserPlan() {
   const token = await getToken()
   if (!token) return 'free'
   try {
-    const res = await fetch('/auth/status', {
+    const res = await fetch(apiUrl('/auth/status'), {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!res.ok) return 'free'
@@ -51,7 +52,7 @@ export async function getAuthStatus() {
   const token = await getToken()
   if (!token) return { enabled: false, provider: 'none' }
   try {
-    const res = await fetch('/auth/status', {
+    const res = await fetch(apiUrl('/auth/status'), {
       headers: { Authorization: `Bearer ${token}` },
     })
     if (!res.ok) return { enabled: false, provider: 'none' }

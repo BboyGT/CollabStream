@@ -12,6 +12,7 @@ import JoinPage from './pages/JoinPage.jsx'
 import { ToastProvider } from './components/Toast.jsx'
 import { supabase } from './lib/supabase.js'
 import { getToken } from './lib/auth.js'
+import { apiUrl } from './lib/api.js'
 import useSession from './store/session.js'
 
 // ── ProtectedRoute ────────────────────────────────────────────────────────────
@@ -41,8 +42,8 @@ function BrandingLoader() {
       if (!token) return
       try {
         const [statusRes, brandRes] = await Promise.all([
-          fetch('/auth/status', { headers: { Authorization: `Bearer ${token}` } }),
-          fetch('/user/branding', { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(apiUrl('/auth/status'), { headers: { Authorization: `Bearer ${token}` } }),
+          fetch(apiUrl('/user/branding'), { headers: { Authorization: `Bearer ${token}` } }),
         ])
         if (statusRes.ok) {
           const { plan } = await statusRes.json()

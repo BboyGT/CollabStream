@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { getToken } from '../lib/auth.js'
+import { apiUrl } from '../lib/api.js'
 
 const PLAN_META = {
   free: {
@@ -110,8 +111,8 @@ export default function Dashboard() {
       if (!token) { navigate('/auth'); return }
 
       const [statusRes, dashRes] = await Promise.all([
-        fetch('/auth/status', { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`/api/dashboard?page=${p}`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(apiUrl('/auth/status'), { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(apiUrl(`/api/dashboard?page=${p}`), { headers: { Authorization: `Bearer ${token}` } }),
       ])
 
       if (!statusRes.ok) { navigate('/auth'); return }
@@ -144,7 +145,7 @@ export default function Dashboard() {
 
   async function downloadAudit(sessionId) {
     const token = await getToken()
-    const res = await fetch(`/api/sessions/${sessionId}/audit`, { headers: { Authorization: `Bearer ${token}` } })
+    const res = await fetch(apiUrl(`/api/sessions/${sessionId}/audit`), { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) return
     const data = await res.json()
     const blob = new Blob([JSON.stringify(data.events || [], null, 2)], { type: 'application/json' })
@@ -158,7 +159,7 @@ export default function Dashboard() {
 
   async function openRecording(sessionId) {
     const token = await getToken()
-    const res = await fetch(`/api/sessions/${sessionId}/recording`, { headers: { Authorization: `Bearer ${token}` } })
+    const res = await fetch(apiUrl(`/api/sessions/${sessionId}/recording`), { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) return
     const { url } = await res.json()
     window.open(url, '_blank')

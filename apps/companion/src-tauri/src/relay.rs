@@ -5,7 +5,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio_tungstenite::accept_hdr_async;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::Message;
 
 use crate::auth;
 use crate::input::{dispatch, InputEvent};
@@ -29,12 +32,76 @@ struct RelayMessage {
     keyboard: Option<bool>,
 }
 
+// SECURITY (see AUDIT.md): origins allowed to open a WebSocket connection to
+// this local relay, read once per handshake from COLLABSTREAM_ALLOWED_ORIGINS
+// (comma-separated). Without this check, ANY webpage open in ANY browser on
+// this machine could connect to ws://127.0.0.1:7734 and arm + drive OS-level
+// mouse/keyboard input — the relay previously had no access control beyond a
+// token that the connecting client itself supplies and therefore fully
+// controls. Origin headers are set by the browser and cannot be forged by
+// page JavaScript, so checking Origin specifically closes the "malicious
+// webpage" attack vector, which is the most realistic one here.
+//
+// This does NOT protect against a different local process (not a browser)
+// deliberately forging an Origin header — a raw TCP client can set any
+// Origin it wants. Fully closing that would need a paired shared secret
+// (e.g. a pairing code shown once in the companion UI and entered into the
+// web app), which is tracked as follow-up work and not implemented here.
+// Defaults cover the local dev server only; deployments served from another
+// origin (LAN IP, ngrok, production domain) MUST set this env var or the
+// web app's browser tab will be refused a connection to the companion.
+fn allowed_origins() -> Vec<String> {
+    match std::env::var("COLLABSTREAM_ALLOWED_ORIGINS") {
+        Ok(val) if !val.trim().is_empty() => val
+            .split(',')
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        _ => vec![
+            "http://localhost:5173".to_string(),
+            "http://127.0.0.1:5173".to_string(),
+        ],
+    }
+}
+
+fn reject(status: StatusCode, message: &str) -> ErrorResponse {
+    Response::builder()
+        .status(status)
+        .body(Some(message.to_string()))
+        .unwrap()
+}
+
+/// Handshake callback: rejects the connection unless the Origin header is on
+/// the allowlist. See the security note on `allowed_origins` above.
+fn check_origin(req: &Request, response: Response) -> Result<Response, ErrorResponse> {
+    let origin = req
+        .headers()
+        .get("origin")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim_end_matches('/').to_string());
+
+    let allowed = allowed_origins();
+
+    match origin {
+        Some(ref o) if allowed.iter().any(|a| a == o) => Ok(response),
+        Some(o) => {
+            eprintln!("[relay] Rejected connection — origin '{}' not in allowlist {:?}", o, allowed);
+            Err(reject(StatusCode::FORBIDDEN, "origin not allowed"))
+        }
+        None => {
+            eprintln!("[relay] Rejected connection — no Origin header present");
+            Err(reject(StatusCode::FORBIDDEN, "origin header required"))
+        }
+    }
+}
+
 pub async fn start() {
     let listener = TcpListener::bind(ADDR)
         .await
         .expect("Failed to bind relay WS on :7734");
 
     println!("[relay] Listening on ws://{}", ADDR);
+    println!("[relay] Allowed origins: {:?}", allowed_origins());
 
     loop {
         match listener.accept().await {
@@ -51,10 +118,10 @@ pub async fn start() {
 async fn handle_connection(stream: TcpStream, addr: SocketAddr) {
     println!("[relay] Connection from {}", addr);
 
-    let ws = match accept_async(stream).await {
+    let ws = match accept_hdr_async(stream, check_origin).await {
         Ok(ws) => ws,
         Err(e) => {
-            eprintln!("[relay] WS handshake error: {}", e);
+            eprintln!("[relay] WS handshake rejected for {}: {}", addr, e);
             return;
         }
     };

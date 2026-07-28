@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 
 test('landing loads and primary CTA is visible', async ({ page }) => {
   await page.goto('/')
-  await expect(page.getByRole('button', { name: /start for free/i }).first()).toBeVisible()
+  await expect(page.getByRole('link', { name: /start for free/i }).first()).toBeVisible()
 })
 
 test('guest not found shows error', async ({ page }) => {

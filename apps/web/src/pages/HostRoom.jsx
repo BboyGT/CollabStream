@@ -1,9 +1,11 @@
-import { useEffect, useRef, useCallback, useState } from 'react'
+﻿import { useEffect, useRef, useCallback, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useParams, useNavigate } from 'react-router-dom'
 import useSession from '../store/session.js'
 import useSignaling from '../hooks/useSignaling.js'
 import useWebRTCHost from '../hooks/useWebRTCHost.js'
 import CreatorSignature from '../components/CreatorSignature.jsx'
+import Baton, { BatonActionButton } from '../components/Baton.jsx'
 import useAudio from '../hooks/useAudio.js'
 import useScreenShare, { SHARE_QUALITIES } from '../hooks/useScreenShare.js'
 import useAnnotation from '../hooks/useAnnotation.js'
@@ -15,15 +17,19 @@ import VideoTile from '../components/VideoTile.jsx'
 import ControlBar from '../components/ControlBar.jsx'
 import CompanionStatus from '../components/CompanionStatus.jsx'
 import AudioControls from '../components/AudioControls.jsx'
-import ChatPanel from '../components/ChatPanel.jsx'
+import SidePanel from '../components/SidePanel.jsx'
 import WhiteboardToolbar from '../components/WhiteboardToolbar.jsx'
 import { getPublicOrigin, guestJoinUrl, resolveJoinCode } from '../lib/session.js'
+import { apiUrl } from '../lib/api.js'
+import { getToken } from '../lib/auth.js'
 import RemoteAudio from '../components/RemoteAudio.jsx'
 import MediaPermissionScreen from '../components/MediaPermissionScreen.jsx'
 import useSnapshot from '../hooks/useSnapshot.js'
 import useNetworkQuality from '../hooks/useNetworkQuality.js'
+import useActiveSpeaker from '../hooks/useActiveSpeaker.js'
 import NetworkBadge from '../components/NetworkBadge.jsx'
 import OnboardingTips from '../components/OnboardingTips.jsx'
+import HelpGuide from '../components/HelpGuide.jsx'
 import { flags } from '../lib/flags.js'
 import InviteModal from '../components/InviteModal.jsx'
 import ScheduleModal from '../components/ScheduleModal.jsx'
@@ -62,31 +68,59 @@ function SignalingBanner({ signalingConnected, retryCount, manualRetry, maxRetri
 }
 
 // Fix 1 + Fix 2: onMouseDown trigger, 'click' outside listener, z-[9999],
-// setTimeout so modal state updates fire OUTSIDE the event batch
+// setTimeout so modal state updates fire OUTSIDE the event batch.
+//
+// The dropdown itself is rendered through a portal to document.body at a
+// fixed position computed from the trigger button's own bounding rect,
+// rather than as a normal `position: absolute` child of this component.
+// This button lives inside the header, which has `overflow-x-auto` for
+// horizontal scrolling on narrow screens - and per the CSS spec, setting
+// overflow-x to anything other than visible forces the paired overflow-y
+// axis to also clip, even though it's never set explicitly. A z-index of
+// 9999 can't rescue an absolutely-positioned dropdown from that: clipping
+// happens before stacking/paint, so the menu was opening (state genuinely
+// flipped) but rendering invisible/cut off by the header's own bounds -
+// which looks identical to "the button doesn't work" from the outside.
 function OverflowMenu({ items }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+  const [pos, setPos] = useState(null)
+  const btnRef = useRef(null)
+  const menuRef = useRef(null)
 
   useEffect(() => {
     function onOutside(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+      if (menuRef.current && menuRef.current.contains(e.target)) return
+      if (btnRef.current && btnRef.current.contains(e.target)) return
+      setOpen(false)
     }
     if (open) document.addEventListener('click', onOutside)
     return () => document.removeEventListener('click', onOutside)
   }, [open])
 
+  function toggle(e) {
+    e.stopPropagation()
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect()
+      setPos({ top: r.bottom + 6, right: window.innerWidth - r.right })
+    }
+    setOpen((v) => !v)
+  }
+
   return (
-    <div ref={ref} className="relative">
+    <div className="relative">
       <button
-        onMouseDown={(e) => { e.stopPropagation(); setOpen((v) => !v) }}
+        ref={btnRef}
+        onMouseDown={toggle}
         className="px-2.5 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 text-xs font-mono hover:bg-slate-800 focus-ring"
       >
         &middot;&middot;&middot;
       </button>
-      {open && (
+      {open && pos && createPortal(
         <div
+          ref={menuRef}
           onClick={(e) => e.stopPropagation()}
-          className="modal-enter absolute right-0 top-9 bg-slate-950 border border-slate-800 rounded-xl shadow-2xl z-[9999] min-w-[210px] py-1 overflow-hidden"
+          style={{ position: 'fixed', top: pos.top, right: pos.right }}
+          className="modal-enter bg-slate-950 border border-slate-800 rounded-xl shadow-2xl z-[9999] min-w-[210px] py-1 overflow-hidden"
         >
           {items.map((item, i) =>
             item === 'divider'
@@ -105,7 +139,8 @@ function OverflowMenu({ items }) {
                 </button>
               )
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )
@@ -118,12 +153,19 @@ export default function HostRoom() {
   const pointerRef = useRef(null)
   const videoRef = useRef(null)
   const cursorCanvasRef = useRef(null)
-  const footerScrollRef = useRef(null)
 
   const [sharing, setSharing] = useState(false)
   const [shareQuality, setShareQuality] = useState(SHARE_QUALITIES[0])
   const [whiteboard, setWhiteboard] = useState(false)
   const [wbStrokeWidth, setWbStrokeWidth] = useState(3)
+  // Persistent whiteboards (found gap, now built - backend already existed
+  // with zero UI; see docs/floor-mode-plan.md)
+  const [boardsOpen, setBoardsOpen] = useState(false)
+  const [savedBoards, setSavedBoards] = useState([])
+  const [boardsLoading, setBoardsLoading] = useState(false)
+  const [activeBoardId, setActiveBoardId] = useState(null)
+  const [newBoardName, setNewBoardName] = useState('')
+  const [boardSaving, setBoardSaving] = useState(false)
   const [textInput, setTextInput] = useState(null)
   const [controlSupported, setControlSupported] = useState(true)
   const [mediaError, setMediaError] = useState(null)
@@ -147,6 +189,7 @@ export default function HostRoom() {
   const [joinValid, setJoinValid] = useState(null)
   const [videoEnabled, setVideoEnabled] = useState(true)
   const [raisedHands, setRaisedHands] = useState({})
+  const [floorPeerId, setFloorPeerId] = useState(null)
   const [scheduleOpen, setScheduleOpen] = useState(false)
   const [sessionName] = useState(() => localStorage.getItem('cs_session_name') || '')
   const [handQueue, setHandQueue] = useState([])
@@ -158,8 +201,39 @@ export default function HostRoom() {
   const [maxGuests, setMaxGuests] = useState(null)
   const [capMenuOpen, setCapMenuOpen] = useState(false)
   const [knockQueue, setKnockQueue] = useState([])
+  // Knock panel (moved off-center, see comment above the panel JSX below
+  // for why): open/closed state for the side panel, plus a snooze window
+  // so a host mid-conversation isn't interrupted by every single knock
+  // toast. knockMutedUntilRef exists alongside the state twin because the
+  // WS message handler below is a plain inline callback re-created every
+  // render - reading the ref avoids any risk of a stale closure over
+  // knockMutedUntil specifically in that one callback.
+  const [knockPanelOpen, setKnockPanelOpen] = useState(false)
+  const [knockMutedUntil, setKnockMutedUntilState] = useState(0)
+  const knockMutedUntilRef = useRef(0)
+  const [snoozeMenuOpen, setSnoozeMenuOpen] = useState(false)
+  const [expandedKnockPeerId, setExpandedKnockPeerId] = useState(null)
+  function setKnockMutedUntil(ts) { knockMutedUntilRef.current = ts; setKnockMutedUntilState(ts) }
+  // Waiting-room chat (see docs/waiting-room-chat-plan.md) - keyed by
+  // pending guest peerId, separate from in-call chat's messages. Sent over
+  // the raw signaling WebSocket (signalingWrite), same transport as the
+  // knock itself, since the pending guest has no WebRTC data channel yet.
+  const [waitingChatByPeer, setWaitingChatByPeer] = useState({})
+  const [waitingChatInput, setWaitingChatInput] = useState('')
+  // Co-host / assisted moderation (see docs/co-host-plan.md, Option A).
+  // Set of guest peerIds this host has promoted. Bookkeeping mirrors
+  // rooms.js's coHostPeerIds - kept here too so the UI can render badges
+  // and the guest-list buttons without a round trip.
+  const [coHostPeerIds, setCoHostPeerIds] = useState(() => new Set())
   const [chatOpen, setChatOpen] = useState(false)
-  const [chatDock, setChatDock] = useState(() => { try { return localStorage.getItem('cs_chat_dock') || 'floating' } catch { return 'floating' } })
+  // Redesign side panel (collabstream-redesign.html): replaces the old
+  // separate docked/floating ChatPanel AND the separate "Guests" popover
+  // with one consistent tabbed panel. `chatOpen`/`guestListOpen` still
+  // independently control the panel's overall visibility (unchanged, so
+  // every existing keyboard shortcut / unread-badge / toast wiring tied to
+  // them keeps working); `sideTab` just tracks which tab shows once it's
+  // open. Private chat targeting is still handled by the active SidePanel.
+  const [sideTab, setSideTab] = useState('chat')
   const [chatTarget, setChatTarget] = useState('all')
   const [unreadCount, setUnreadCount] = useState(0)
   const [elapsed, setElapsed] = useState(0)
@@ -171,6 +245,7 @@ export default function HostRoom() {
   const [reactions, setReactions] = useState([])
   const [controlFlash, setControlFlash] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
   const [screenExpanding, setScreenExpanding] = useState(false)
   const prevSharingRef = useRef(false)
   const [focusMode, setFocusMode] = useState(false)
@@ -181,24 +256,24 @@ export default function HostRoom() {
   const [recapData, setRecapData] = useState(null)  // Fix 7
   const [showReloadHint, setShowReloadHint] = useState(true)  // Fix 5
   const [guestPage, setGuestPage] = useState(0)  // Fix 8
+  // Pre-launch lobby (docs/pre-launch-lobby-plan.md). null = not yet known
+  // (assume live to avoid an unnecessary delay for the overwhelmingly
+  // common non-scheduled case - see the requestMedia effect below), false
+  // = genuinely in the lobby, true = live. Sourced first from the existing
+  // /session/:id REST fetch below (fast, already happening anyway), then
+  // kept fresh by the WS 'registered'/'call-started' messages.
+  const [sessionStarted, setSessionStarted] = useState(null)
+  const [lobbyGuests, setLobbyGuestsState] = useState([])
+  const lobbyGuestsRef = useRef([])
+  function setLobbyGuests(guests) { lobbyGuestsRef.current = guests; setLobbyGuestsState(guests) }
+  const [lobbyMessages, setLobbyMessages] = useState([])
+  const [lobbyChatInput, setLobbyChatInput] = useState('')
 
-  // Footer scroll arrows
-  const [canScrollLeft, setCanScrollLeft] = useState(false)
-  const [canScrollRight, setCanScrollRight] = useState(false)
-
-  const checkScroll = useCallback(() => {
-    const el = footerScrollRef.current; if (!el) return
-    setCanScrollLeft(el.scrollLeft > 8)
-    setCanScrollRight(el.scrollLeft < el.scrollWidth - el.clientWidth - 8)
-  }, [])
-
-  useEffect(() => {
-    const el = footerScrollRef.current; if (!el) return
-    checkScroll()
-    el.addEventListener('scroll', checkScroll)
-    window.addEventListener('resize', checkScroll)
-    return () => { el.removeEventListener('scroll', checkScroll); window.removeEventListener('resize', checkScroll) }
-  }, [checkScroll])
+  // Footer buttons wrap onto a second row on narrow screens instead of
+  // requiring horizontal scrolling - tapping an edge arrow to sideways-
+  // scroll through a toolbar is not how anyone expects a button bar to
+  // work, especially on a phone. This replaces the old scroll-track/arrow-
+  // button apparatus entirely.
 
   const [joinToasts, setJoinToasts] = useState([])
   const addJoinToast = useCallback((msg) => {
@@ -214,7 +289,7 @@ export default function HostRoom() {
     setAnnotationColor, setAnnotationSize, setAnnotationTool,
     setControlGranted, setControlToken, setMode, setPeerConnected,
     peerConnected, signalingConnected, peerLeft, setPeerLeft, guestCount,
-    mode, branding, userPlan,
+    mode, branding, userPlan, companionConnected,
     stopLocalMedia,
   } = useSession()
 
@@ -224,6 +299,23 @@ export default function HostRoom() {
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
   }, [])
+
+  // Camera/mic can stay on (OS-level indicator light included) even after
+  // the session visibly "ends," because React's unmount-cleanup effect
+  // (stopLocalMedia in the effect below) isn't guaranteed to run to
+  // completion on a hard tab close or reload - the browser can tear down
+  // the JS context mid-cleanup. beforeunload above only shows a
+  // confirmation prompt; it never actually stops anything. pagehide IS
+  // reliably fired by the browser before a tab closes/navigates (unlike
+  // unload, which is unreliable on mobile and increasingly discouraged),
+  // so this calls stopLocalMedia directly as a redundant, more trustworthy
+  // safety net alongside the existing unmount cleanup and handleEnd's own
+  // explicit call.
+  useEffect(() => {
+    function onPageHide() { stopLocalMedia() }
+    window.addEventListener('pagehide', onPageHide)
+    return () => window.removeEventListener('pagehide', onPageHide)
+  }, [stopLocalMedia])
 
   // Fix 5: reload hint fades after 10s
   useEffect(() => {
@@ -263,7 +355,17 @@ export default function HostRoom() {
       .catch((err) => setMediaError(err?.name || 'Permission denied'))
   }, [setLocalStream])
 
-  useEffect(() => { requestMedia() }, [requestMedia])
+  useEffect(() => {
+    // Pre-launch lobby (docs/pre-launch-lobby-plan.md): don't request the
+    // camera/mic while sitting in the lobby - the lobby is deliberately
+    // text-only (chat, not video) for every participant, so there's no
+    // reason to hold the camera open, possibly for hours, before the host
+    // actually starts the call. Fires immediately for the null (not-yet-
+    // known) and true (live) cases, matching existing behavior exactly for
+    // every non-scheduled session.
+    if (sessionStarted === false) return
+    requestMedia()
+  }, [requestMedia, sessionStarted])
 
   // Fix 3: stop tracks on unmount
   useEffect(() => {
@@ -274,11 +376,16 @@ export default function HostRoom() {
     const params = new URLSearchParams(window.location.search)
     const token = params.get('token') || localStorage.getItem('cs_token')
     if (!token) return
-    fetch(`/session/${sessionId}?token=${encodeURIComponent(token)}`)
+    fetch(apiUrl(`/session/${sessionId}?token=${encodeURIComponent(token)}`))
       .then((r) => { if (!r.ok) throw new Error(); return r.json() })
       .then((d) => {
         setLocked(!!d.locked); setJoinCode(d.joinCode || null); setShortCode(d.shortCode || null)
         setSessionDuration(d.durationMinutes || 120); setMaxGuests(d.maxGuests || null)
+        // Pre-launch lobby (docs/pre-launch-lobby-plan.md): this REST call
+        // was already happening for the fields above, so it's the fastest
+        // source for `started` too - avoids waiting on the WS round trip
+        // just to find out whether the camera should even be requested.
+        setSessionStarted(d.started !== false)
       })
       .catch(() => navigate('/'))
     setInviteOpen(true)
@@ -289,7 +396,7 @@ export default function HostRoom() {
       const safeOrigin = typeof origin === 'string' && origin ? origin.replace(/\/$/, '') : window.location.origin
       setPublicOrigin(safeOrigin)
       if (safeOrigin.includes('ngrok') || safeOrigin.includes('ngrok-free')) {
-        fetch('/public-host').then((r) => r.json()).then((d) => { if (d?.origin) setLanOrigin(d.origin.replace(/\/$/, '')) }).catch(() => {})
+        fetch(apiUrl('/public-host')).then((r) => r.json()).then((d) => { if (d?.origin) setLanOrigin(d.origin.replace(/\/$/, '')) }).catch(() => {})
       }
     }).catch(() => {})
   }, [])
@@ -331,7 +438,11 @@ export default function HostRoom() {
     prevSharingRef.current = sharing || !!screenStream
   }, [sharing, screenStream])
 
-  // Fix 2: sync canvas pixel dimensions to display size, re-sync when whiteboard opens
+  // Fix 2: sync canvas pixel dimensions to display size, re-sync when whiteboard opens.
+  // Also repaints from stroke history after every resize - setting
+  // canvas.width/height always clears the canvas as a side effect, and
+  // without a redraw afterward the whiteboard silently lost everything
+  // drawn on it the moment the window was resized.
   useEffect(() => {
     const canvas = canvasRef.current; if (!canvas) return
     const sync = () => {
@@ -339,6 +450,7 @@ export default function HostRoom() {
       canvas.height = canvas.offsetHeight
       const pointer = pointerRef.current
       if (pointer) { pointer.width = canvas.offsetWidth; pointer.height = canvas.offsetHeight }
+      annotation.redraw?.()
     }
     sync()
     const ro = new ResizeObserver(sync)
@@ -372,22 +484,40 @@ export default function HostRoom() {
         setGuestAudioMuted((m) => { const n = { ...m }; delete n[peerId]; return n })
         setGuestNames((n) => { const nx = { ...n }; delete nx[peerId]; return nx })
         setGuestCursors((c) => { const n = { ...c }; delete n[peerId]; return n })
+        // If the guest who just disconnected held the floor, clear the UI
+        // state too - hostRTC.closePeer already tore down the actual audio
+        // relay to everyone else, this just keeps the banner/button state
+        // in sync with it (see docs/floor-mode-plan.md).
+        setFloorPeerId((f) => (f === peerId ? null : f))
+        // Same idea for co-host status (docs/co-host-plan.md) - a
+        // disconnected guest shouldn't keep a moderator badge if they
+        // reconnect as a fresh peerId later.
+        setCoHostPeerIds((s) => { if (!s.has(peerId)) return s; const n = new Set(s); n.delete(peerId); return n })
       }
     },
   })
 
   const sendAll = useCallback((channel, msg, exceptPeerId) => hostRTC.broadcast(channel, msg, exceptPeerId), [hostRTC])
+  // Chat needs to be able to target ONE specific guest privately (the
+  // Everyone/[Guest] selector in ChatPanel) as well as broadcast to
+  // everyone - this used to be entirely decorative: selecting a guest had
+  // zero effect because chat always broadcast via sendAll regardless of
+  // what was selected. This dispatcher actually respects the target.
+  const chatDispatch = useCallback((channel, msg, target) => {
+    if (target && target !== 'all') hostRTC.sendToPeer(target, channel, msg)
+    else hostRTC.broadcast(channel, msg)
+  }, [hostRTC])
   const { toggleMute, handleAudioEvent } = useAudio(sendAll)
   const annotation = useAnnotation(canvasRef, pointerRef, sendAll, 'host')
   const { takeSnapshot } = useSnapshot(videoRef, canvasRef)
-  const chat = useChat(sendAll, 'host')
+  const chat = useChat(chatDispatch, 'host')
 
   const broadcastRoster = useCallback(() => {
-    const roster = guestOrder.map((gid, idx) => ({ id: gid, name: guestNames[gid] || `Guest ${idx + 1}`, hand: !!raisedHands[gid] }))
+    const roster = guestOrder.map((gid, idx) => ({ id: gid, name: guestNames[gid] || `Guest ${idx + 1}`, hand: !!raisedHands[gid], cohost: coHostPeerIds.has(gid) }))
     hostRTC.broadcast('annotation', { type: 'roster', guests: roster, count: guestOrder.length, queue: handQueue })
-  }, [guestOrder, guestNames, raisedHands, handQueue, hostRTC])
+  }, [guestOrder, guestNames, raisedHands, handQueue, hostRTC, coHostPeerIds])
 
-  useEffect(() => { if (guestOrder.length > 0) broadcastRoster() }, [guestOrder, guestNames, raisedHands, broadcastRoster])
+  useEffect(() => { if (guestOrder.length > 0) broadcastRoster() }, [guestOrder, guestNames, raisedHands, coHostPeerIds, broadcastRoster])
 
   useEffect(() => {
     const canvas = cursorCanvasRef.current; if (!canvas) return
@@ -404,12 +534,12 @@ export default function HostRoom() {
 
   function commitText(value) {
     if (!value?.trim() || !textInput) { setTextInput(null); return }
-    const canvas = canvasRef.current; if (!canvas) return
-    const ctx = canvas.getContext('2d')
-    ctx.font = `${16 * (wbStrokeWidth || 3) / 3}px monospace`
-    ctx.fillStyle = annotationColor
-    ctx.fillText(value, textInput.x * canvas.width, textInput.y * canvas.height)
-    hostRTC.broadcast('annotation', { type: 'text-stamp', x: textInput.x, y: textInput.y, text: value, color: annotationColor, size: wbStrokeWidth })
+    // Routed through addTextStamp so text participates in undo/clear/resize
+    // redraw like every other stroke - see useAnnotation.js. This also
+    // broadcasts it over the wire using the existing generic stroke-relay
+    // path, so no separate 'text-stamp' handling is needed on the receiving
+    // end anymore.
+    annotation.addTextStamp(textInput.x, textInput.y, value, annotationColor, wbStrokeWidth)
     setTextInput(null)
   }
 
@@ -418,20 +548,38 @@ export default function HostRoom() {
       annotation.handleRemoteDraw(msg); hostRTC.broadcast('annotation', msg, peerId)
     }
     if (msg.type === 'wb-clear') { annotation.clearCanvasLocal(); hostRTC.broadcast('annotation', msg, peerId) }
-    if (msg.type === 'text-stamp') {
-      const canvas = canvasRef.current; if (!canvas) return
-      const ctx = canvas.getContext('2d')
-      ctx.font = `${16 * (msg.size || 3) / 3}px monospace`
-      ctx.fillStyle = msg.color || '#000'
-      ctx.fillText(msg.text, msg.x * canvas.width, msg.y * canvas.height)
-      hostRTC.broadcast('annotation', msg, peerId)
-    }
     if (msg.type === 'input' && controlToken && peerId === controlPeerId) companion.forwardInput(controlToken, msg)
     if (msg.type === 'admin' && msg.action === 'name' && msg.name) { setGuestNames((n) => ({ ...n, [peerId]: msg.name })); addJoinToast(`${msg.name} joined`) }
     if (msg.type === 'admin' && msg.action === 'leave') addJoinToast(`${guestNames[peerId] || 'Guest'} left the session`)
     if (msg.type === 'hand') {
       if (msg.action === 'raise') { setRaisedHands((h) => ({ ...h, [peerId]: true })); setHandQueue((q) => q.includes(peerId) ? q : [...q, peerId]) }
       if (msg.action === 'lower') { setRaisedHands((h) => { const n = { ...h }; delete n[peerId]; return n }); setHandQueue((q) => q.filter((id) => id !== peerId)) }
+    }
+    if (msg.type === 'floor-request') {
+      // Distinct, more prominent signal than a plain hand-raise (see
+      // docs/floor-mode-plan.md) - raising a hand already queues them for
+      // "Allow" (unmute-for-host-only), this specifically flags "they want
+      // everyone to hear them," surfaced as its own toast so it doesn't get
+      // lost among ordinary hand-raises.
+      addJoinToast(`?? ${guestNames[peerId] || 'Guest'} is requesting the floor`)
+    }
+    if (msg.type === 'cohost-action') {
+      // Co-host / assisted moderation (see docs/co-host-plan.md, Option A).
+      // A promoted guest's moderator UI sent this over the data channel
+      // instead of calling anything directly - only THIS host's tab holds
+      // the actual RTCPeerConnections, so the co-host's request has to be
+      // re-dispatched to the exact same functions the host's own buttons
+      // call. No new logic lives here, just a second caller, and only for
+      // a guest actually still holding the co-host badge (server-verified
+      // badge, checked again client-side in case state has drifted) -
+      // guarding against a stale/forged message from a since-demoted or
+      // never-promoted guest.
+      if (!coHostPeerIds.has(peerId)) return
+      if (msg.action === 'kick') handleKick(msg.targetPeerId, false)
+      if (msg.action === 'ban') handleKick(msg.targetPeerId, true)
+      if (msg.action === 'mute') { hostRTC.setRemoteAudio(msg.targetPeerId, false); setGuestAudioMuted((m) => ({ ...m, [msg.targetPeerId]: true })) }
+      if (msg.action === 'unmute') handleAllowSpeak(msg.targetPeerId)
+      return
     }
     if (msg.type === 'control' && msg.action === 'request') {
       if (!controlSupported) hostRTC.sendToPeer(peerId, 'control', { type: 'control', action: 'deny' })
@@ -448,7 +596,22 @@ export default function HostRoom() {
     }
     if (msg.type === 'whiteboard') { if (msg.action === 'on') setWhiteboard(true); if (msg.action === 'off') setWhiteboard(false) }
     if (msg.type === 'chat' || msg.type === 'file-start' || msg.type === 'file-chunk' || msg.type === 'file-end') {
-      chat.handle(msg)
+      // useChat.js tags every outgoing message with the sender's static
+      // ROLE ('guest'), not their identity - fine for a guest's own view
+      // (there's only one host), but useless on the host's side with more
+      // than one guest: every message showed up labeled simply "guest",
+      // with zero way to tell who actually sent what. The host is the only
+      // side that knows the peerId -> name mapping (guestNames), so it's
+      // resolved here, once, right as each message arrives - not in
+      // useChat.js, which has no concept of other guests at all. Only
+      // 'chat' and 'file-start' carry a `from` that ChatPanel actually
+      // displays (file-chunk/file-end just carry transferId, and file-end's
+      // final message reuses the name captured off file-start in
+      // useChat.js's fileBuffers), so only those two are rewritten.
+      const withSender = (msg.type === 'chat' || msg.type === 'file-start')
+        ? { ...msg, from: guestNames[peerId] || 'Guest' }
+        : msg
+      chat.handle(withSender)
       if (!chatOpen) { setUnreadCount((c) => c + 1); playChatMessage() }
     }
     handleAudioEvent(msg)
@@ -462,7 +625,50 @@ export default function HostRoom() {
       return
     }
     if (msg.type === 'peer-left') setPeerLeft(true)
-    if (msg.type === 'knock') setKnockQueue((q) => [...q, { peerId: msg.peerId, name: msg.name || 'Guest' }])
+    // Pre-launch lobby (docs/pre-launch-lobby-plan.md): the WS 'registered'
+    // response is a second, authoritative source for `started` - kept
+    // fresh here in case it disagrees with the REST snapshot fetched
+    // earlier (e.g. the host started the call from a different tab in the
+    // brief window between that fetch and this WS connecting).
+    if (msg.type === 'registered' && typeof msg.started === 'boolean') setSessionStarted(msg.started)
+    if (msg.type === 'lobby-roster') { setLobbyGuests(msg.guests || []); return }
+    if (msg.type === 'lobby-chat') {
+      // fromPeerId is 'host' only when this host sent it from ANOTHER
+      // connection (rare - e.g. a second tab) since relay.js never echoes
+      // a sender's own message back to them; this host's own sends are
+      // added directly to lobbyMessages in sendLobbyChat below, not via
+      // this handler. Otherwise, resolve the guest's display name from the
+      // roster we already have (falls back to 'Guest' if the roster
+      // broadcast hasn't caught up yet, which self-corrects on the next one).
+      const name = msg.fromPeerId === 'host' ? 'Host' : (lobbyGuestsRef.current.find((g) => g.peerId === msg.fromPeerId)?.name || 'Guest')
+      setLobbyMessages((m) => [...m, { from: name, text: msg.text, t: Date.now() }])
+      return
+    }
+    if (msg.type === 'call-started') {
+      // Flipping this triggers the requestMedia effect above to finally
+      // request the camera/mic, and the component re-renders past the
+      // lobby early-return into the normal live view.
+      setSessionStarted(true)
+      return
+    }
+    if (msg.type === 'knock') {
+      setKnockQueue((q) => [...q, { peerId: msg.peerId, name: msg.name || 'Guest', arrivedAt: Date.now() }])
+      // Non-blocking by design (see the knock panel JSX below for the full
+      // reasoning) - a toast, not a modal that steals focus mid-session.
+      // Respects the snooze window so a host who's mid-conversation isn't
+      // interrupted by every single knock; the badge count and panel stay
+      // accurate regardless of whether the toast fired.
+      if (Date.now() >= knockMutedUntilRef.current) {
+        addJoinToast(`?? ${msg.name || 'Someone'} is waiting to join`)
+      }
+    }
+    if (msg.type === 'waiting-chat' && msg.peerId) {
+      setWaitingChatByPeer((m) => ({
+        ...m,
+        [msg.peerId]: [...(m[msg.peerId] || []), { from: 'guest', text: msg.text, t: Date.now() }],
+      }))
+      return
+    }
     hostRTC.handleSignal(msg)
   })
 
@@ -517,6 +723,72 @@ export default function HostRoom() {
     setRaisedHands((h) => { const n = { ...h }; delete n[peerId]; return n })
   }
 
+  // Server-authoritative kick (design idea ?3.1): tells the signaling
+  // server to revoke this guest's individual token (and, with ban:true,
+  // block their IP from getting a new one), then tears down the local
+  // WebRTC connection immediately rather than waiting for that to happen
+  // as a side effect of the WS closing.
+  function handleKick(peerId, ban = false) {
+    signalingWrite({ type: 'kick', peerId, ban })
+    hostRTC.closePeer(peerId)
+    setGuestStreams((s) => { const n = { ...s }; delete n[peerId]; return n })
+    setGuestOrder((o) => o.filter((id) => id !== peerId))
+    if (floorPeerId === peerId) setFloorPeerId(null)
+    // A kicked guest shouldn't keep a moderator badge - mirrors the
+    // server's own defense-in-depth demoteCoHost call in relay.js's kick
+    // handler (see docs/co-host-plan.md).
+    setCoHostPeerIds((s) => { if (!s.has(peerId)) return s; const n = new Set(s); n.delete(peerId); return n })
+    addJoinToast(`${guestNames[peerId] || 'Guest'} ${ban ? 'banned' : 'removed'}`)
+  }
+
+  // Co-host / assisted moderation (see docs/co-host-plan.md, Option A).
+  // Promoting/demoting is server-side bookkeeping + audit trail only - it
+  // does not by itself grant the co-host anything. What actually lets a
+  // co-host act is that once promoted, HostRoom.jsx broadcasts a roster
+  // update (see broadcastRoster below) including the co-host list, and
+  // GuestRoom.jsx shows moderator buttons to whichever guest sees their own
+  // peerId in that list. Those buttons send 'cohost-action' over the data
+  // channel, which handleDataMessage above re-dispatches to handleKick /
+  // handleAllowSpeak - exactly as if the host had clicked the button.
+  function handlePromoteCoHost(peerId) {
+    signalingWrite({ type: 'promote-cohost', peerId })
+    setCoHostPeerIds((s) => new Set(s).add(peerId))
+    addJoinToast(`${guestNames[peerId] || 'Guest'} is now a co-host`)
+  }
+
+  function handleDemoteCoHost(peerId) {
+    signalingWrite({ type: 'demote-cohost', peerId })
+    setCoHostPeerIds((s) => { if (!s.has(peerId)) return s; const n = new Set(s); n.delete(peerId); return n })
+    addJoinToast(`${guestNames[peerId] || 'Guest'} is no longer a co-host`)
+  }
+
+  // Floor mode (see docs/floor-mode-plan.md): grants everyone-can-hear-them
+  // access to one guest at a time. Distinct from "Allow" above, which only
+  // unmutes that guest for the host. Granting the floor also makes sure the
+  // guest isn't muted for the host - grantFloor relays the exact same
+  // underlying inbound audio track that the Mute button's .enabled flag
+  // controls, so a muted-for-host guest would otherwise be silently
+  // inaudible to everyone else too, even though the grant "succeeded."
+  function handleGrantFloor(peerId) {
+    const ok = hostRTC.grantFloor(peerId)
+    if (!ok) { addJoinToast('Could not grant the floor yet - try again in a moment'); return }
+    hostRTC.setRemoteAudio(peerId, true)
+    setGuestAudioMuted((m) => ({ ...m, [peerId]: false }))
+    setFloorPeerId(peerId)
+    hostRTC.broadcast('annotation', { type: 'floor-grant', peerId, name: guestNames[peerId] || 'Guest' })
+    signalingWrite({ type: 'floor-grant', peerId })
+    setRaisedHands((h) => { const n = { ...h }; delete n[peerId]; return n })
+    setHandQueue((q) => q.filter((id) => id !== peerId))
+  }
+
+  function handleRevokeFloor() {
+    if (!floorPeerId) return
+    hostRTC.revokeFloor()
+    hostRTC.broadcast('annotation', { type: 'floor-revoke' })
+    signalingWrite({ type: 'floor-revoke' })
+    setFloorPeerId(null)
+  }
+
   function handleGrant() {
     const token = crypto.randomUUID()
     setControlToken(token); setControlGranted(true); setMode('view')
@@ -545,7 +817,16 @@ export default function HostRoom() {
       setIsPiP(false)
     }
     const next = !whiteboard
+    // The whiteboard and the screen-share annotation overlay share the same
+    // canvas/stroke-history under the hood. Without clearing on toggle,
+    // old screen-share annotations would bleed onto a freshly-opened
+    // "blank" whiteboard (and vice versa) - confusing, and very unlikely to
+    // be what anyone expects from a toggle. Clearing both directions makes
+    // each surface start blank, which is what the UI already visually
+    // implies (whiteboard renders as a plain white canvas).
+    annotation.clearCanvasLocal()
     setWhiteboard(next)
+    setActiveBoardId(null)
     hostRTC.broadcast('annotation', { type: 'whiteboard', action: next ? 'on' : 'off' })
   }
 
@@ -559,6 +840,86 @@ export default function HostRoom() {
     const url = canvas.toDataURL('image/png')
     const a = document.createElement('a'); a.href = url
     a.download = `collabstream-whiteboard-${Date.now()}.png`; a.click()
+  }
+
+  // Persistent whiteboards
+  // The /api/whiteboards CRUD API already existed server-side (Business
+  // plan) with no UI calling it - this is that UI. See docs/floor-mode-plan.md.
+  async function loadSavedBoards() {
+    if (userPlan !== 'business') return
+    setBoardsLoading(true)
+    const token = await getToken()
+    const res = await fetch(apiUrl('/api/whiteboards'), { headers: { Authorization: `Bearer ${token}` } })
+    setBoardsLoading(false)
+    if (res.ok) { const { whiteboards } = await res.json(); setSavedBoards(whiteboards || []) }
+  }
+
+  function openBoardsPanel() {
+    setBoardsOpen(true)
+    loadSavedBoards()
+  }
+
+  async function saveBoardAs(name) {
+    if (!name?.trim()) return
+    setBoardSaving(true)
+    const token = await getToken()
+    const res = await fetch(apiUrl('/api/whiteboards'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: name.trim() }),
+    })
+    if (res.ok) {
+      const { whiteboard } = await res.json()
+      // Immediately persist the current strokes into the newly created board
+      // rather than leaving it empty until the next explicit save.
+      await fetch(apiUrl(`/api/whiteboards/${whiteboard.id}`), {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ strokes: annotation.getStrokes() }),
+      })
+      setActiveBoardId(whiteboard.id)
+      setNewBoardName('')
+      addJoinToast(`Saved "${whiteboard.name}"`)
+      loadSavedBoards()
+    }
+    setBoardSaving(false)
+  }
+
+  async function saveActiveBoard() {
+    if (!activeBoardId) return
+    setBoardSaving(true)
+    const token = await getToken()
+    const res = await fetch(apiUrl(`/api/whiteboards/${activeBoardId}`), {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ strokes: annotation.getStrokes() }),
+    })
+    setBoardSaving(false)
+    if (res.ok) addJoinToast('Board saved')
+  }
+
+  async function loadBoard(id) {
+    const token = await getToken()
+    const res = await fetch(apiUrl(`/api/whiteboards/${id}`), { headers: { Authorization: `Bearer ${token}` } })
+    if (!res.ok) return
+    const { whiteboard } = await res.json()
+    annotation.loadStrokes(whiteboard.strokes || [])
+    setActiveBoardId(whiteboard.id)
+    setBoardsOpen(false)
+    // Sync guests to the loaded board: clear their canvas, then replay each
+    // stroke using the same {type:'stroke', action:'commit', stroke} shape
+    // addTextStamp/onPointerUp already send - no new wire message needed,
+    // the existing generic handleRemoteDraw on the guest side already
+    // handles it.
+    hostRTC.broadcast('annotation', { type: 'clear' })
+    ;(whiteboard.strokes || []).forEach((stroke) => {
+      hostRTC.broadcast('annotation', { type: 'stroke', action: 'commit', stroke })
+    })
+    addJoinToast(`Loaded "${whiteboard.name}"`)
+  }
+
+  async function deleteBoard(id) {
+    const token = await getToken()
+    await fetch(apiUrl(`/api/whiteboards/${id}`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+    if (activeBoardId === id) setActiveBoardId(null)
+    loadSavedBoards()
   }
 
   function onWbPointerDown(e) {
@@ -576,25 +937,62 @@ export default function HostRoom() {
     setFocusMode((v) => { const next = !v; if (next) { setFocusHint(true); setTimeout(() => setFocusHint(false), 2000) }; return next })
   }
 
-  function openChat() { setChatOpen(true); setUnreadCount(0) }
+  function openChat() { setChatOpen(true); setSideTab('chat'); setUnreadCount(0) }
   function closeChat() { setChatOpen(false) }
+  function openParticipants() { setGuestListOpen(true); setSideTab('participants') }
 
-  function admitKnock() {
-    const knock = knockQueue[0]; if (!knock) return
-    signalingWrite({ type: 'knock-response', action: 'approve', peerId: knock.peerId })
-    setKnockQueue((q) => q.slice(1))
+  function admitKnockById(peerId) {
+    signalingWrite({ type: 'knock-response', action: 'approve', peerId })
+    setKnockQueue((q) => q.filter((k) => k.peerId !== peerId))
+    setWaitingChatByPeer((m) => { const n = { ...m }; delete n[peerId]; return n })
+    setExpandedKnockPeerId((id) => (id === peerId ? null : id))
   }
-  function rejectKnock() {
-    const knock = knockQueue[0]; if (!knock) return
-    signalingWrite({ type: 'knock-response', action: 'reject', peerId: knock.peerId })
-    setKnockQueue((q) => q.slice(1))
+  function rejectKnockById(peerId) {
+    signalingWrite({ type: 'knock-response', action: 'reject', peerId })
+    setKnockQueue((q) => q.filter((k) => k.peerId !== peerId))
+    setWaitingChatByPeer((m) => { const n = { ...m }; delete n[peerId]; return n })
+    setExpandedKnockPeerId((id) => (id === peerId ? null : id))
+  }
+  function admitAllKnocks() {
+    knockQueue.forEach((k) => signalingWrite({ type: 'knock-response', action: 'approve', peerId: k.peerId }))
+    setKnockQueue([])
+    setWaitingChatByPeer({})
+    setExpandedKnockPeerId(null)
+  }
+
+  function sendWaitingChatToGuest(peerId) {
+    const text = waitingChatInput.trim()
+    if (!text || !peerId) return
+    signalingWrite({ type: 'waiting-chat', targetPeerId: peerId, text })
+    setWaitingChatByPeer((m) => ({
+      ...m,
+      [peerId]: [...(m[peerId] || []), { from: 'me', text, t: Date.now() }],
+    }))
+    setWaitingChatInput('')
+  }
+
+  // Pre-launch lobby (docs/pre-launch-lobby-plan.md). Sent straight over
+  // the signaling WebSocket, not a WebRTC data channel - there are no
+  // PeerConnections at all yet pre-start, so this is the only transport
+  // available. Mirrors sendWaitingChatToGuest's pattern (add locally on
+  // send, since the server never echoes a message back to its own sender).
+  function sendLobbyChat() {
+    const text = lobbyChatInput.trim()
+    if (!text) return
+    signalingWrite({ type: 'lobby-chat', text })
+    setLobbyMessages((m) => [...m, { from: 'me', text, t: Date.now() }])
+    setLobbyChatInput('')
+  }
+
+  function handleStartCall() {
+    signalingWrite({ type: 'start-call' })
   }
 
   async function updateCap(newCap) {
     const params = new URLSearchParams(window.location.search)
     const token = params.get('token') || localStorage.getItem('cs_token')
     if (!token) return
-    const res = await fetch(`/session/${sessionId}/cap?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(apiUrl(`/session/${sessionId}/cap?token=${encodeURIComponent(token)}`), {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ maxGuests: newCap }),
     })
@@ -605,7 +1003,7 @@ export default function HostRoom() {
     const params = new URLSearchParams(window.location.search)
     const token = params.get('token') || localStorage.getItem('cs_token')
     if (!token) return
-    const res = await fetch(`/session/${sessionId}/audit?token=${encodeURIComponent(token)}`)
+    const res = await fetch(apiUrl(`/session/${sessionId}/audit?token=${encodeURIComponent(token)}`))
     if (!res.ok) return
     const data = await res.json()
     const blob = new Blob([JSON.stringify(data.events || [], null, 2)], { type: 'application/json' })
@@ -646,15 +1044,19 @@ export default function HostRoom() {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a'); a.href = url
       a.download = `collabstream-${Date.now()}.webm`; a.click()
-      URL.revokeObjectURL(url); audioCtxRef.current?.close?.()
+      URL.revokeObjectURL(url)
+      // .catch() here matters: handleEnd() may have already closed this
+      // same AudioContext if the session was ended while still recording
+      // (see handleEnd - it now leaves the close to this handler instead of
+      // racing it, but this guard stays as a safety net either way).
+      audioCtxRef.current?.close?.().catch(() => {})
       // Phase E: cloud upload for Business plan
       if (userPlan === 'business') {
         try {
-          const { getToken } = await import('../lib/auth.js')
           const token = await getToken()
           const form = new FormData()
           form.append('file', blob, 'recording.webm')
-          const res = await fetch(`/api/sessions/${sessionId}/recording`, {
+          const res = await fetch(apiUrl(`/api/sessions/${sessionId}/recording`), {
             method: 'POST',
             headers: { Authorization: `Bearer ${token}` },
             body: form,
@@ -673,8 +1075,18 @@ export default function HostRoom() {
     hostRTC.broadcast('annotation', { type: 'admin', action: 'end' })
     stopShare()
     stopLocalMedia()
-    if (recorderRef.current?.state === 'recording') recorderRef.current.stop()
-    audioCtxRef.current?.close?.()
+    const wasRecording = recorderRef.current?.state === 'recording'
+    if (wasRecording) {
+      recorderRef.current.stop()
+      // Deliberately NOT closing audioCtxRef here - recorder.onstop closes
+      // it once the final chunk has actually been flushed. Closing it
+      // synchronously right after .stop() (which is asynchronous) used to
+      // risk clipping the last fraction of a second of recorded audio, and
+      // guaranteed a double-close (unhandled promise rejection) once
+      // onstop ran afterward and tried to close it again.
+    } else {
+      audioCtxRef.current?.close?.().catch(() => {})
+    }
     handleRevoke()
     const h = Math.floor(elapsed / 3600)
     const m = Math.floor((elapsed % 3600) / 60)
@@ -690,6 +1102,17 @@ export default function HostRoom() {
     function onKey(e) {
       const tag = document.activeElement?.tagName?.toLowerCase()
       if (tag === 'input' || tag === 'textarea') return
+      // Guard against exactly the bug this comment is fixing: the Text
+      // tool requires ONE MORE click (on the canvas, to place the cursor)
+      // before an <input> exists to type into and get caught by the check
+      // above. Until that click happens, focus is still on the toolbar
+      // button - so without this guard, typing a letter like 'd', 'l', 's',
+      // or 'm' right after selecting Text silently fires a DIFFERENT
+      // shortcut (switch mode, snapshot, mute) instead of doing nothing
+      // visibly wrong, which looked identical to "the text tool is broken"
+      // from the outside. See docs archive / bug report: text tool appeared
+      // to do nothing when typed into immediately after selecting it.
+      if (whiteboard && annotationTool === 'text') return
       if (e.key === 'Escape') { if (focusMode) { setFocusMode(false); return }; if (controlToken) { handleRevoke(); return } }
       if (e.key === 'f' || e.key === 'F') { toggleFocus(); return }
       if (e.key === '?') { setShortcutsOpen((v) => !v); return }
@@ -701,13 +1124,13 @@ export default function HostRoom() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [controlToken, setMode, toggleMute, takeSnapshot, chatOpen, focusMode])
+  }, [controlToken, setMode, toggleMute, takeSnapshot, chatOpen, focusMode, whiteboard, annotationTool])
 
   async function toggleLock() {
     const params = new URLSearchParams(window.location.search)
     const token = params.get('token') || localStorage.getItem('cs_token')
     if (!token) return
-    const res = await fetch(`/session/${sessionId}/lock?token=${encodeURIComponent(token)}`, {
+    const res = await fetch(apiUrl(`/session/${sessionId}/lock?token=${encodeURIComponent(token)}`), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ locked: !locked }),
     })
@@ -719,14 +1142,35 @@ export default function HostRoom() {
   // Fix 8: spotlight uses guestScreenStreams OR guestStreams for focused guest
   const focusedGuestVideo = focusGuestId ? (guestScreenStreams[focusGuestId] || guestStreams[focusGuestId]) : null
   const primaryStream = hasScreen ? screenStream : (focusedGuestVideo || localStream)
-  const network = useNetworkQuality(guestIds.length > 0 ? () => hostRTC.getStats(guestIds[0]) : null, 'host')
-  const chatIsDocked = chatOpen && chatDock === 'docked'
+  // Follow the focused/spotlighted guest rather than always guestIds[0], so
+  // the number shown matches who's actually on screen - small refinement
+  // to the connection-quality indicator (design idea ?3.4).
+  const networkTargetId = (focusGuestId && guestIds.includes(focusGuestId)) ? focusGuestId : guestIds[0]
+  const network = useNetworkQuality(networkTargetId ? () => hostRTC.getStats(networkTargetId) : null, 'host')
+  // Active-speaker indicator (found gap, now built - see docs/floor-mode-plan.md's
+  // "Other features" list). Highlights whoever's currently talking in the
+  // guest tile grid below, independent of floor mode.
+  const speakingPeerIds = useActiveSpeaker(guestStreams)
   const remaining = sessionDuration * 60 - elapsed
   const expiryWarning = remaining < 900 && sessionStartRef.current
   const sessionEnded = remaining <= 0 && sessionStartRef.current
   const guestPillAmber = maxGuests && guestIds.length >= maxGuests
   const guestPillLabel = maxGuests ? `Guests (${guestIds.length}/${maxGuests}${guestPillAmber ? ' \u2014 full' : ''})` : `Guests (${guestIds.length})`
   const wbCurrentMode = mode === 'laser' ? 'laser' : (annotationTool === 'eraser' ? 'eraser' : annotationTool === 'text' ? 'text' : annotationTool === 'arrow' ? 'arrow' : 'annotate')
+
+  // Feeds the redesign SidePanel's Participants tab (see SidePanel.jsx) --
+  // built fresh each render from the same state the old guest-list popover
+  // used, just reshaped into the { id, name, hand, cohost, hasFloor } shape
+  // that component expects.
+  const sidePanelParticipants = guestOrder.map((gid, idx) => ({
+    id: gid,
+    name: guestNames[gid] || `Guest ${idx + 1}`,
+    isMe: false,
+    hand: !!raisedHands[gid],
+    cohost: coHostPeerIds.has(gid),
+    hasFloor: floorPeerId === gid,
+  }))
+  const sidePanelOpen = (chatOpen || guestListOpen) && !focusMode
 
   // Fix 8: grid sizing
   const tileCols = guestIds.length <= 2 ? 1 : guestIds.length <= 4 ? 2 : 3
@@ -739,17 +1183,98 @@ export default function HostRoom() {
 
   const overflowItems = [
     { label: locked ? 'Unlock session' : 'Lock session', onClick: toggleLock, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg> },
-    { label: 'Copy link', onClick: () => navigator.clipboard.writeText(guestJoinUrl(publicOrigin, joinCode || shortCode || '')), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg> },
+    { label: 'Copy link', onClick: () => { navigator.clipboard.writeText(guestJoinUrl(publicOrigin, joinCode || shortCode || '')).then(() => addJoinToast('Link copied')) }, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg> },
     { label: 'Invite & QR', onClick: () => setInviteOpen(true), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg> },
     { label: 'Schedule', onClick: () => setScheduleOpen(true), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg> },
     'divider',
     { label: 'Take snapshot', onClick: takeSnapshot, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" /><circle cx="12" cy="13" r="4" /></svg> },
     { label: 'Download audit', onClick: downloadAudit, icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /></svg> },
     { label: 'Set guest cap', onClick: () => setCapMenuOpen((v) => !v), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" /></svg> },
+    'divider',
+    { label: 'Help & guide', onClick: () => setHelpOpen(true), icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" /></svg> },
   ]
 
   if (!localStream && mediaError) {
     return <MediaPermissionScreen title="Camera and microphone needed" body="Enable access so your guest can see and hear you." error={mediaError} onRetry={requestMedia} />
+  }
+
+  // Pre-launch lobby (docs/pre-launch-lobby-plan.md). A completely separate
+  // screen from the live call - no camera, no footer/whiteboard/toolbar,
+  // just presence + text chat, since nobody has WebRTC connections yet.
+  // Early-returned before the main render, same pattern as the
+  // MediaPermissionScreen check above.
+  if (sessionStarted === false) {
+    return (
+      <div className="h-screen app-bg flex flex-col safe-area">
+        <header className="flex items-center justify-between px-4 py-3 border-b border-slate-800/70 glass">
+          <div className="flex items-center gap-2">
+            <div className="w-6 h-6 rounded-md bg-cyan-500 flex items-center justify-center shadow-[0_0_16px_rgba(34,211,238,0.35)]">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>
+            </div>
+            <span className="font-mono text-xs text-slate-300 tracking-widest">{sessionName || 'CollabStream'}</span>
+          </div>
+          <button onClick={() => setInviteOpen(true)} className="px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 text-slate-300 text-xs font-mono hover:bg-slate-800">
+            Invite
+          </button>
+        </header>
+
+        <main className="flex-1 flex items-center justify-center px-6">
+          <div className="w-full max-w-lg">
+            <div className="text-center mb-6">
+              <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/70 border border-slate-700 text-cyan-200 text-xs font-mono mb-4">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                Lobby &middot; not started yet
+              </div>
+              <h1 className="text-2xl font-semibold text-slate-100 mb-2">Waiting to start</h1>
+              <p className="text-slate-400 text-sm">Share the invite link. Guests can arrive and chat here before you start the call.</p>
+            </div>
+
+            {lobbyGuests.length > 0 && (
+              <div className="mb-4 px-4 py-3 rounded-xl bg-slate-900/60 border border-slate-800">
+                <div className="text-xs font-mono text-slate-400 mb-2">Waiting ({lobbyGuests.length})</div>
+                <div className="flex flex-wrap gap-2">
+                  {lobbyGuests.map((g) => (
+                    <span key={g.peerId} className="px-2 py-1 rounded-full bg-slate-800 border border-slate-700 text-slate-200 text-xs font-mono">{g.name}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="mb-3 px-4 py-3 rounded-xl bg-slate-900/60 border border-slate-800 max-h-56 overflow-y-auto">
+              {lobbyMessages.length === 0 ? (
+                <p className="text-slate-600 text-xs font-mono">No messages yet - say hi while people arrive.</p>
+              ) : lobbyMessages.map((m, i) => (
+                <div key={i} className={`text-xs font-mono mb-1.5 last:mb-0 ${m.from === 'me' ? 'text-cyan-300 text-right' : 'text-slate-300'}`}>
+                  <span className="text-slate-600">{m.from === 'me' ? 'You: ' : `${m.from}: `}</span>{m.text}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2 mb-6">
+              <input
+                value={lobbyChatInput}
+                onChange={(e) => setLobbyChatInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && sendLobbyChat()}
+                placeholder="Say hi while people arrive..."
+                maxLength={500}
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono outline-none focus:border-cyan-600"
+              />
+              <button onClick={sendLobbyChat} className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200 text-xs font-mono hover:bg-slate-700">Send</button>
+            </div>
+
+            <button onClick={handleStartCall}
+              className="w-full flex items-center justify-center gap-2 px-6 py-3.5 bg-cyan-500 hover:bg-cyan-400 text-slate-900 rounded-xl text-sm font-mono font-semibold transition-all shadow-lg shadow-cyan-900/30">
+              Start call{lobbyGuests.length > 0 ? ` (${lobbyGuests.length} waiting)` : ''}
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+            </button>
+          </div>
+        </main>
+
+        <InviteModal open={inviteOpen} onClose={() => setInviteOpen(false)} joinCode={joinCode} shortCode={shortCode}
+          joinUrl={guestJoinUrl(publicOrigin, joinCode || shortCode || '')}
+          lanUrl={lanOrigin ? guestJoinUrl(lanOrigin, joinCode || shortCode || '') : null}
+          invalid={!joinValid && joinCode} title={sessionName} />
+      </div>
+    )
   }
 
   return (
@@ -831,8 +1356,37 @@ export default function HostRoom() {
             </div>
             <NetworkBadge quality={network} />
             {guestOrder.length > 0 && (
-              <button onClick={() => setGuestListOpen((v) => !v)} className="px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 text-xs font-mono hover:bg-slate-800 whitespace-nowrap">
+              <button onClick={() => (guestListOpen ? setGuestListOpen(false) : openParticipants())} className="relative px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 text-xs font-mono hover:bg-slate-800 whitespace-nowrap">
                 Guests ({guestOrder.length})
+                {/* The "X raised hand" toast fades after 2.5s (addJoinToast) -
+                    without a persistent indicator, a host who doesn't act on
+                    it immediately (or who's mid-conversation and misses it)
+                    has no way to know a hand is still raised without
+                    proactively opening this panel. handQueue tracks raised
+                    hands in the order they were raised; Object.keys(raisedHands)
+                    would work equally well here but handQueue is already the
+                    canonical ordered list broadcast to guests, so it's reused. */}
+                {handQueue.length > 0 && (
+                  <span className="absolute -top-1.5 -right-1.5 bg-amber-500 text-zinc-900 text-[10px] font-mono font-bold rounded-full min-w-[16px] h-[16px] flex items-center justify-center px-1 leading-none">
+                    ?
+                  </span>
+                )}
+              </button>
+            )}
+            {/* Knocking guests used to force open a full-screen, centered
+                modal the instant someone knocked - directly interrupting
+                whatever the host was doing (mid-share, mid-conversation)
+                with something that couldn't be glanced at and dismissed.
+                This is the non-blocking replacement: a small badge the host
+                clicks when they're ready, not a popup that clicks itself.
+                See the panel JSX further down for Admit all / per-guest
+                admit / snooze. */}
+            {knockQueue.length > 0 && (
+              <button onClick={() => setKnockPanelOpen((v) => !v)} className="relative px-2 py-1 rounded bg-slate-900 border border-slate-700 text-slate-200 text-xs font-mono hover:bg-slate-800 whitespace-nowrap">
+                ?? Waiting
+                <span className="absolute -top-1.5 -right-1.5 bg-cyan-500 text-zinc-900 text-[10px] font-mono font-bold rounded-full min-w-[16px] h-[16px] flex items-center justify-center px-1 leading-none">
+                  {knockQueue.length}
+                </span>
               </button>
             )}
             <span className="px-2 py-1 rounded bg-slate-900 border border-slate-800 text-slate-300 text-xs font-mono whitespace-nowrap">Host</span>
@@ -859,6 +1413,11 @@ export default function HostRoom() {
           {peerLeft && !focusMode && (
             <div className="absolute top-3 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-full bg-amber-950/60 border border-amber-800 text-amber-200 text-xs font-mono z-30">Guest left the session</div>
           )}
+          {floorPeerId && !focusMode && (
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30">
+              <Baton holderName={guestNames[floorPeerId] || 'Guest'} isMe={false} holding="floor" onClick={handleRevokeFloor} />
+            </div>
+          )}
 
           {whiteboard ? (
             // Fix 2: whiteboard block with both annotation canvas AND pointer canvas
@@ -881,11 +1440,12 @@ export default function HostRoom() {
                 strokeWidth={wbStrokeWidth}
                 onStrokeWidthChange={(w) => { setWbStrokeWidth(w); setAnnotationSize(w) }}
                 isHost={true}
+                onOpenBoards={userPlan === 'business' ? openBoardsPanel : undefined}
               />
               <canvas
                 ref={canvasRef}
                 className="absolute inset-0 w-full h-full"
-                style={{ touchAction: 'none', zIndex: 10 }}
+                style={{ touchAction: 'none', zIndex: 10, cursor: annotationTool === 'text' ? 'text' : 'crosshair' }}
                 onPointerDown={onWbPointerDown}
                 onPointerMove={annotation.onPointerMove}
                 onPointerUp={annotation.onPointerUp}
@@ -914,32 +1474,23 @@ export default function HostRoom() {
           ) : hasScreen || (focusedGuestVideo && !hasScreen) ? (
             <div className={`w-full h-full ${screenExpanding ? 'screen-expand' : ''}`} onClick={() => setFitMode((m) => m === 'contain' ? 'cover' : 'contain')}>
               <ScreenView stream={primaryStream} canvasRef={canvasRef} pointerRef={pointerRef} videoRef={videoRef} muted={true} fit={fitMode}
-                annotationHandlers={{ onPointerDown: annotation.onPointerDown, onPointerMove: annotation.onPointerMove, onPointerUp: annotation.onPointerUp }} />
+                label={!hasScreen && focusGuestId ? (guestNames[focusGuestId] || 'Guest') : null}
+                annotationHandlers={{ onPointerDown: annotation.onPointerDown, onPointerMove: annotation.onPointerMove, onPointerUp: annotation.onPointerUp, onResize: annotation.redraw }} />
               <canvas ref={cursorCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none" style={{ zIndex: 10 }} />
             </div>
           ) : (
-            // Fix 4: PiP button on the "You" tile
+            // VideoTile has its own self-contained PiP button (own ref, own
+            // <video> element) - a second PiP button used to be rendered
+            // here on top of it, but it referenced HostRoom's own videoRef,
+            // which is never attached to a DOM node in this branch (only
+            // wired to ScreenView, not VideoTile). That dead button always
+            // found videoRef.current === null and did nothing, while
+            // sitting at zIndex:10 in nearly the same top-right corner as
+            // VideoTile's working one - very likely intercepting clicks
+            // meant for the button underneath. Removed; VideoTile's own
+            // button is the only one now.
             <div className="w-full h-full relative">
               <VideoTile stream={localStream} name="You" muted={true} label="You" />
-              {document.pictureInPictureEnabled && localStream && !whiteboard && (
-                <button
-                  style={{ position: 'absolute', top: 8, right: 8, zIndex: 10, fontSize: 10, padding: '2px 8px', borderRadius: 99, background: 'rgba(0,0,0,0.55)', color: '#cbd5e1', border: '1px solid rgba(255,255,255,0.12)', cursor: 'pointer', fontFamily: 'monospace' }}
-                  onClick={async () => {
-                    const video = videoRef.current
-                    if (!video) return
-                    try {
-                      if (document.pictureInPictureElement === video) {
-                        await document.exitPictureInPicture(); setIsPiP(false)
-                      } else {
-                        await video.requestPictureInPicture(); setIsPiP(true)
-                        video.addEventListener('leavepictureinpicture', () => setIsPiP(false), { once: true })
-                      }
-                    } catch {}
-                  }}
-                >
-                  {isPiP ? 'Exit PiP' : '\u2389 PiP'}
-                </button>
-              )}
             </div>
           )}
 
@@ -961,13 +1512,19 @@ export default function HostRoom() {
               <div style={{ display: 'grid', gridTemplateColumns: `repeat(${tileCols}, ${tileW}px)`, gap: 4 }}>
                 {pagedGuests.map((gid, idx) => {
                   const isFocused = gid === focusGuestId
+                  const isSpeaking = speakingPeerIds.has(gid)
                   return (
                     <div
                       key={gid}
                       onClick={() => setFocusGuestId(isFocused ? null : gid)}
-                      style={{ width: tileW, height: tileH, borderRadius: 8, overflow: 'hidden', cursor: 'pointer', flexShrink: 0, outline: isFocused ? '2px solid #22d3ee' : '1px solid rgba(255,255,255,0.07)', transition: 'outline 0.15s' }}
+                      style={{
+                        width: tileW, height: tileH, borderRadius: 8, overflow: 'hidden', cursor: 'pointer', flexShrink: 0,
+                        outline: isFocused ? '2px solid #22d3ee' : isSpeaking ? '2px solid #34d399' : '1px solid rgba(255,255,255,0.07)',
+                        boxShadow: isSpeaking && !isFocused ? '0 0 10px rgba(52,211,153,0.45)' : 'none',
+                        transition: 'outline 0.15s, box-shadow 0.15s',
+                      }}
                     >
-                      <VideoFeed stream={guestStreams[gid]} name={guestNames[gid] || `Guest ${guestPage * GUESTS_PER_PAGE + idx + 1}`} label={guestNames[gid] || `Guest ${guestPage * GUESTS_PER_PAGE + idx + 1}`} muted={false} corner="br" inline={true} />
+                      <VideoFeed stream={guestStreams[gid]} name={guestNames[gid] || `Guest ${guestPage * GUESTS_PER_PAGE + idx + 1}`} label={guestNames[gid] || `Guest ${guestPage * GUESTS_PER_PAGE + idx + 1}`} muted={false} corner="br" inline={true} draggable={false} />
                     </div>
                   )
                 })}
@@ -986,22 +1543,31 @@ export default function HostRoom() {
           )}
         </main>
 
-        {chatIsDocked && !focusMode && (
-          <ChatPanel messages={chat.messages} onSend={chat.send} onSendFile={chat.sendFile} onClose={closeChat} onOpen={() => setUnreadCount(0)}
-            targets={guestOrder.map((gid, i) => ({ id: gid, label: guestNames[gid] || `Guest ${i + 1}` }))}
-            selectedTarget={chatTarget} onTargetChange={setChatTarget} unreadCount={unreadCount} myRole="host"
-            initialDock="docked" onDockChange={setChatDock} />
+        {sidePanelOpen && (
+          <SidePanel
+            messages={chat.messages}
+            onSendChat={(text, target) => chat.send(text, target)}
+            chatTargets={guestOrder.map((gid, i) => ({ id: gid, label: guestNames[gid] || `Guest ${i + 1}` }))}
+            selectedChatTarget={chatTarget}
+            onChatTargetChange={setChatTarget}
+            unreadCount={unreadCount}
+            onOpen={() => setUnreadCount(0)}
+            participants={sidePanelParticipants}
+            onGiveFloor={handleGrantFloor}
+            onEndFloor={handleRevokeFloor}
+            onMuteAll={handleMuteAll}
+            onUnmuteAll={handleUnmuteAll}
+            onOpenWhiteboard={toggleWhiteboard}
+            myRole="host"
+            defaultTab={sideTab}
+            onClose={() => { setChatOpen(false); setGuestListOpen(false) }}
+          />
         )}
       </div>
 
       {!focusMode && (
-        <footer className="flex items-center px-0 py-0 border-t border-slate-800/70 glass z-20 safe-area">
-          <div className="relative flex items-center flex-1 min-w-0">
-            {canScrollLeft && (
-              <button onClick={() => footerScrollRef.current?.scrollBy({ left: -120, behavior: 'smooth' })}
-                className="absolute left-0 z-10 h-full px-2 bg-gradient-to-r from-zinc-950 to-transparent text-slate-400 hover:text-slate-200 flex items-center text-lg leading-none">&#8249;</button>
-            )}
-            <div ref={footerScrollRef} className="flex items-center gap-2 overflow-x-auto scrollbar-none px-4 py-3 min-w-0">
+        <footer className="flex flex-wrap items-center gap-2 px-4 py-3 border-t border-slate-800/70 glass z-20 safe-area">
+          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
               <AudioControls onToggleMute={toggleMute} />
               <button onClick={toggleNoiseSupp} className={`flex-shrink-0 px-3 py-2 rounded-lg border text-xs font-mono transition-all whitespace-nowrap ${noiseSupp ? 'bg-slate-900 border-slate-700 text-slate-300' : 'bg-amber-950/30 border-amber-700 text-amber-200'}`}>{noiseSupp ? 'NS On' : 'NS Off'}</button>
               <button onClick={toggleVideo} className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-mono transition-all whitespace-nowrap ${videoEnabled ? 'bg-slate-900 border-slate-700 text-slate-300' : 'bg-red-950/40 border-red-800 text-red-200'}`}>
@@ -1037,72 +1603,22 @@ export default function HostRoom() {
                   )}
                 </div>
               )}
-              <button onClick={() => setShortcutsOpen(true)} className="flex-shrink-0 flex items-center gap-1 px-2 py-2 rounded-lg border text-xs font-mono bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200">
+              <button onClick={() => setShortcutsOpen(true)} title="Keyboard shortcuts" className="flex-shrink-0 flex items-center gap-1 px-2 py-2 rounded-lg border text-xs font-mono bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" /></svg>
               </button>
-            </div>
-            {canScrollRight && (
-              <button onClick={() => footerScrollRef.current?.scrollBy({ left: 120, behavior: 'smooth' })}
-                className="absolute right-0 z-10 h-full px-2 bg-gradient-to-l from-zinc-950 to-transparent text-slate-400 hover:text-slate-200 flex items-center text-lg leading-none">&#8250;</button>
-            )}
+              <button onClick={() => setHelpOpen(true)} title="Help & guide" className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-mono bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200 whitespace-nowrap">
+                Help
+              </button>
           </div>
-          <div className="w-px h-8 bg-slate-800 flex-shrink-0" />
-          <div className="flex-shrink-0 px-4 py-3">
+          <div className="w-px h-8 bg-slate-800 flex-shrink-0 hidden sm:block" />
+          <div className="flex-shrink-0">
             <ControlBar onGrant={handleGrant} onRevoke={handleRevoke} forceDisabled={!controlSupported || !flags.control}
-              disabledReason={!flags.control ? 'Control is disabled' : !controlSupported ? 'Desktop only' : undefined} />
+              disabledReason={!flags.control ? 'Control is disabled' : !controlSupported ? 'Desktop only' : undefined}
+              controlHolderName={guestNames[controlPeerId] || 'Guest'} />
           </div>
         </footer>
       )}
 
-      {/* Fix 6: guest list with Unmute all + mic icons per guest */}
-      {guestListOpen && guestOrder.length > 0 && !focusMode && (
-        <div className="absolute left-4 top-20 slide-in-left bg-zinc-950/90 border border-zinc-800 rounded-xl p-3 text-xs font-mono z-30 max-w-[80vw]">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-zinc-400">Guests ({guestOrder.length}{maxGuests ? `/${maxGuests}` : ''})</div>
-            <div className="flex items-center gap-1">
-              <button onClick={handleMuteAll} className="px-2 py-1 rounded bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs font-mono">Mute all</button>
-              <button onClick={handleUnmuteAll} className="px-2 py-1 rounded bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs font-mono">Unmute all</button>
-              <button onClick={() => setGuestListOpen(false)} className="text-zinc-500 hover:text-zinc-200 px-1 ml-1">&#x2715;</button>
-            </div>
-          </div>
-          <div className="space-y-2">
-            {guestOrder.map((gid, idx) => {
-              const micMuted = !!guestAudioMuted[gid]
-              return (
-                <div key={gid} className="flex items-center justify-between gap-3">
-                  <div className="text-zinc-300 flex items-center gap-1.5">
-                    <span className={micMuted ? 'text-red-400' : 'text-emerald-400'} style={{ display: 'flex', alignItems: 'center' }}>
-                      {micMuted ? (
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                          <line x1="1" y1="1" x2="23" y2="23" />
-                          <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
-                          <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
-                          <line x1="12" y1="19" x2="12" y2="23" />
-                        </svg>
-                      ) : (
-                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                          <line x1="12" y1="19" x2="12" y2="23" />
-                        </svg>
-                      )}
-                    </span>
-                    {guestNames[gid] || `Guest ${idx + 1}`}
-                    {raisedHands[gid] && <span className="ml-1 text-amber-300">✋</span>}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {raisedHands[gid] && <button onClick={() => handleAllowSpeak(gid)} className="px-2 py-1 rounded bg-emerald-950 border border-emerald-800 text-emerald-200">Allow</button>}
-                    <button onClick={() => { const m = !guestAudioMuted[gid]; setGuestAudioMuted((x) => ({ ...x, [gid]: m })); hostRTC.setRemoteAudio(gid, !m) }} className="px-2 py-1 rounded bg-zinc-900 border border-zinc-700 text-zinc-300">
-                      {guestAudioMuted[gid] ? 'Unmute' : 'Mute'}
-                    </button>
-                    <button onClick={() => { hostRTC.sendToPeer(gid, 'annotation', { type: 'admin', action: 'kick' }); hostRTC.closePeer(gid); setGuestStreams((s) => { const n = { ...s }; delete n[gid]; return n }); setGuestOrder((o) => o.filter((id) => id !== gid)) }} className="px-2 py-1 rounded bg-red-950 border border-red-800 text-red-200">Kick</button>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
 
       {capMenuOpen && (
         <div className="absolute right-4 top-16 modal-enter bg-slate-950 border border-slate-800 rounded-xl p-3 z-50 shadow-xl">
@@ -1111,8 +1627,8 @@ export default function HostRoom() {
             {[2, 3, 5, 10, 20].filter((n) => userPlan === 'business' || n <= (userPlan === 'pro' ? 10 : 3)).map((n) => (
               <button key={String(n)} onClick={() => updateCap(n)}
                 className={`px-3 py-1.5 rounded-lg text-xs font-mono text-left ${maxGuests === n ? 'bg-cyan-500/20 border border-cyan-500/40 text-cyan-200' : 'bg-slate-900 border border-slate-700 text-slate-300 hover:bg-slate-800'}`}>
-                {n === null ? 'Unlimited' : `${n} guests`}
-                {guestOrder.length > (n || 9999) && <span className="ml-2 text-amber-400 text-[10px]">(below current)</span>}
+                {n} guests
+                {guestOrder.length > n && <span className="ml-2 text-amber-400 text-[10px]">(below current)</span>}
               </button>
             ))}
           </div>
@@ -1120,11 +1636,50 @@ export default function HostRoom() {
         </div>
       )}
 
-      {chatOpen && !chatIsDocked && !focusMode && (
-        <ChatPanel messages={chat.messages} onSend={chat.send} onSendFile={chat.sendFile} onClose={closeChat} onOpen={() => setUnreadCount(0)}
-          targets={guestOrder.map((gid, i) => ({ id: gid, label: guestNames[gid] || `Guest ${i + 1}` }))}
-          selectedTarget={chatTarget} onTargetChange={setChatTarget} unreadCount={unreadCount} myRole="host"
-          initialDock={chatDock} onDockChange={setChatDock} />
+
+      {boardsOpen && (
+        <div className="absolute inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setBoardsOpen(false)}>
+          <div className="modal-enter bg-slate-950 border border-slate-800 rounded-2xl p-6 w-[90%] max-w-sm max-h-[70vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <span className="text-slate-100 text-sm font-mono">Saved boards</span>
+              <button onClick={() => setBoardsOpen(false)} className="text-slate-500 text-xs font-mono">Close</button>
+            </div>
+            <div className="flex gap-2 mb-3">
+              <input value={newBoardName} onChange={(e) => setNewBoardName(e.target.value)} placeholder="New board name"
+                className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 font-mono outline-none focus:border-cyan-600" />
+              <button onClick={() => saveBoardAs(newBoardName)} disabled={boardSaving || !newBoardName.trim()}
+                className="px-3 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:bg-slate-800 disabled:text-slate-500 text-zinc-900 text-xs font-mono font-semibold whitespace-nowrap">
+                Save as new
+              </button>
+            </div>
+            {activeBoardId && (
+              <button onClick={saveActiveBoard} disabled={boardSaving}
+                className="w-full mb-4 px-3 py-2 rounded-lg bg-slate-900 border border-slate-700 text-slate-200 text-xs font-mono hover:bg-slate-800">
+                Save changes to current board
+              </button>
+            )}
+            {boardsLoading ? (
+              <div className="text-slate-500 font-mono text-xs">Loading&hellip;</div>
+            ) : savedBoards.length === 0 ? (
+              <div className="text-slate-500 font-mono text-xs">No saved boards yet.</div>
+            ) : (
+              <div className="space-y-2">
+                {savedBoards.map((b) => (
+                  <div key={b.id} className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg border ${activeBoardId === b.id ? 'bg-cyan-500/10 border-cyan-700' : 'bg-slate-900 border-slate-800'}`}>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-slate-200 text-xs font-mono truncate">{b.name}</div>
+                      <div className="text-slate-500 text-[10px] font-mono">{b.updated_at ? new Date(b.updated_at).toLocaleString() : ''}</div>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button onClick={() => loadBoard(b.id)} className="px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-200 text-[10px] font-mono">Load</button>
+                      <button onClick={() => deleteBoard(b.id)} className="px-2 py-1 rounded bg-red-950 border border-red-800 text-red-200 text-[10px] font-mono">Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
 
       {shortcutsOpen && (
@@ -1145,18 +1700,98 @@ export default function HostRoom() {
         </div>
       )}
 
-      {knockQueue.length > 0 && (
-        <div className="absolute inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="modal-enter bg-zinc-950 border border-zinc-800 rounded-2xl p-6 w-[90%] max-w-sm">
-            <h3 className="text-zinc-100 text-sm font-mono mb-1">Someone wants to join</h3>
-            <p className="text-zinc-400 text-xs font-mono mb-4">
-              <span className="text-zinc-200">{knockQueue[0].name || 'Guest'}</span> is requesting access.
-              {knockQueue.length > 1 && <span className="text-zinc-500 ml-1">({knockQueue.length - 1} more waiting)</span>}
-            </p>
-            <div className="flex gap-2">
-              <button onClick={admitKnock} className="flex-1 px-3 py-2 rounded-lg bg-emerald-700 text-white text-xs font-mono">Admit</button>
-              <button onClick={rejectKnock} className="flex-1 px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs font-mono">Decline</button>
+      {/* Knock panel: side panel, not a center-screen blocking modal (see
+          the header badge comment above for the full "why"). Opens only on
+          click, lists every waiting guest at once with per-guest Admit/
+          Decline + an expandable per-guest chat thread (reusing the same
+          waiting-room chat backend from docs/waiting-room-chat-plan.md,
+          just restructured to show the whole queue instead of only the
+          front of it), an "Admit all" bulk action for when the host trusts
+          everyone waiting, and a snooze control so a host who's mid-
+          conversation can mute the arrival toast for a few minutes without
+          losing the queue itself - the badge count keeps updating either way. */}
+      {knockPanelOpen && knockQueue.length > 0 && !focusMode && (
+        <div className="absolute left-4 top-20 slide-in-left bg-zinc-950/95 border border-zinc-800 rounded-xl p-3 text-xs font-mono z-40 w-80 max-w-[85vw] max-h-[70vh] overflow-y-auto shadow-2xl">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-zinc-300 font-semibold">Waiting to join ({knockQueue.length})</div>
+            <button onClick={() => setKnockPanelOpen(false)} className="text-zinc-500 hover:text-zinc-200 px-1">&#x2715;</button>
+          </div>
+
+          <div className="flex items-center gap-1.5 mb-3">
+            <button onClick={admitAllKnocks} className="flex-1 px-2 py-1.5 rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-mono">
+              Admit all
+            </button>
+            <div className="relative">
+              <button onClick={() => setSnoozeMenuOpen((v) => !v)} title="Snooze the arrival notification"
+                className={`px-2.5 py-1.5 rounded border text-xs font-mono ${knockMutedUntil > Date.now() ? 'bg-amber-950/40 border-amber-800 text-amber-200' : 'bg-zinc-900 border-zinc-700 text-zinc-300 hover:bg-zinc-800'}`}>
+                &#128276;
+              </button>
+              {snoozeMenuOpen && (
+                <div className="absolute right-0 top-full mt-1 bg-zinc-950 border border-zinc-800 rounded-lg shadow-xl z-50 min-w-[150px] py-1">
+                  {knockMutedUntil > Date.now() && (
+                    <button onClick={() => { setKnockMutedUntil(0); setSnoozeMenuOpen(false) }}
+                      className="w-full text-left px-3 py-1.5 text-xs font-mono text-amber-300 hover:bg-zinc-900 border-b border-zinc-800">
+                      Unmute now
+                    </button>
+                  )}
+                  {[5, 15, 30].map((mins) => (
+                    <button key={mins} onClick={() => { setKnockMutedUntil(Date.now() + mins * 60000); setSnoozeMenuOpen(false) }}
+                      className="w-full text-left px-3 py-1.5 text-xs font-mono text-zinc-300 hover:bg-zinc-900">
+                      Mute {mins}m
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+          </div>
+
+          {knockMutedUntil > Date.now() && (
+            <div className="mb-3 px-2.5 py-1.5 rounded-lg bg-amber-950/30 border border-amber-900 text-amber-300 text-[11px]">
+              Arrival notifications muted until {new Date(knockMutedUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            {knockQueue.map((knock) => (
+              <div key={knock.peerId} className="bg-zinc-900/60 border border-zinc-800 rounded-lg p-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-zinc-200 truncate">{knock.name || 'Guest'}</span>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button onClick={() => admitKnockById(knock.peerId)} className="px-2 py-1 rounded bg-emerald-950 border border-emerald-800 text-emerald-200 text-[10px]">Admit</button>
+                    <button onClick={() => rejectKnockById(knock.peerId)} className="px-2 py-1 rounded bg-zinc-800 border border-zinc-700 text-zinc-300 text-[10px]">Decline</button>
+                    <button onClick={() => setExpandedKnockPeerId((id) => (id === knock.peerId ? null : knock.peerId))} title="Message this guest while they wait"
+                      className={`px-1.5 py-1 rounded border text-[10px] ${expandedKnockPeerId === knock.peerId ? 'bg-cyan-950 border-cyan-700 text-cyan-200' : 'bg-zinc-800 border-zinc-700 text-zinc-400'}`}>
+                      &#128172;
+                    </button>
+                  </div>
+                </div>
+
+                {expandedKnockPeerId === knock.peerId && (
+                  <div className="mt-2 pt-2 border-t border-zinc-800">
+                    <div className="max-h-28 overflow-y-auto space-y-1.5 mb-2">
+                      {(waitingChatByPeer[knock.peerId] || []).length === 0 ? (
+                        <p className="text-zinc-600 text-[11px]">No messages from this guest yet.</p>
+                      ) : waitingChatByPeer[knock.peerId].map((m) => (
+                        <div key={m.t + m.from} className={`text-[11px] ${m.from === 'me' ? 'text-cyan-300 text-right' : 'text-zinc-300'}`}>
+                          <span className="text-zinc-600">{m.from === 'me' ? 'You: ' : `${knock.name || 'Guest'}: `}</span>{m.text}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex gap-1.5">
+                      <input
+                        value={waitingChatInput}
+                        onChange={(e) => setWaitingChatInput(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { sendWaitingChatToGuest(knock.peerId) } }}
+                        placeholder="Reply while they wait..."
+                        maxLength={500}
+                        className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-1 text-[11px] text-slate-200 font-mono outline-none focus:border-cyan-600"
+                      />
+                      <button onClick={() => sendWaitingChatToGuest(knock.peerId)} className="px-2.5 py-1 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-zinc-900 text-[11px] font-mono font-semibold">Send</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -1166,6 +1801,17 @@ export default function HostRoom() {
           <div className="modal-enter bg-zinc-950 border border-zinc-800 rounded-2xl p-6 w-[90%] max-w-sm">
             <h3 className="text-zinc-100 text-sm font-mono mb-2">Guest requests control</h3>
             <p className="text-zinc-500 text-xs mb-4">Approve to give full control. Press Esc anytime to take back.</p>
+            {/* Control has no in-browser mechanism at all - it only works
+                through the separate companion desktop app injecting input
+                into the OS (see useCompanion.js). Approving without it
+                connected does nothing visible to either side, which used to
+                look exactly like a broken feature rather than a missing
+                prerequisite. */}
+            {!companionConnected && (
+              <div className="mb-4 px-3 py-2 rounded-lg bg-amber-950/40 border border-amber-800 text-amber-200 text-[11px] font-mono leading-relaxed">
+                &#9888; Companion app isn't connected. Approving now will grant control but nothing will actually happen until you open the companion app on this device.
+              </div>
+            )}
             <div className="flex gap-2">
               <button onClick={handleGrant} className="flex-1 px-3 py-2 rounded-lg bg-red-600 text-white text-xs font-mono">Approve</button>
               <button onClick={() => { if (pendingControlPeerId) hostRTC.sendToPeer(pendingControlPeerId, 'control', { type: 'control', action: 'deny' }); setPendingControlPeerId(null) }} className="flex-1 px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 text-xs font-mono">Deny</button>
@@ -1191,7 +1837,8 @@ export default function HostRoom() {
         lanUrl={lanOrigin ? guestJoinUrl(lanOrigin, joinCode || shortCode || '') : null}
         invalid={!joinValid && joinCode} title={sessionName} />
       <ScheduleModal open={scheduleOpen} onClose={() => setScheduleOpen(false)} joinUrl={guestJoinUrl(publicOrigin, joinCode || shortCode || '')} />
-      <OnboardingTips role="host" tips={['Share your screen to start.', 'Press ? for shortcuts.', 'Press F for focus mode.']} />
+      <HelpGuide open={helpOpen} onClose={() => setHelpOpen(false)} role="host" />
+      <OnboardingTips role="host" tips={['Share your screen to start.', 'Press ? for shortcuts, or Help for the full guide.', 'Press F for focus mode.']} />
       <CreatorSignature variant="console" projectName="CollabStream" />
     </div>
   )

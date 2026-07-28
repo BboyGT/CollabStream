@@ -1,11 +1,15 @@
 import { useEffect, useState, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { getToken, signOut } from '../lib/auth.js'
+import { apiUrl } from '../lib/api.js'
 
 const PLAN_LIMITS = {
   free:     { guests: 3,  duration: '45 min', label: 'Free' },
   pro:      { guests: 10, duration: '8 hours', label: 'Pro' },
-  business: { guests: 20, duration: 'Unlimited', label: 'Business' },
+  // Server-enforced cap is 8 hours for every plan in practice (see
+  // apps/server/src/index.js's effectiveDuration calc) — this used to say
+  // 'Unlimited' here, which overstated what Business actually gets.
+  business: { guests: 20, duration: '8 hours', label: 'Business' },
 }
 
 const WEBHOOK_EVENTS = ['session.start', 'session.end', 'guest.join', 'recording.ready']
@@ -29,6 +33,11 @@ export default function Settings() {
   const [newWebhookUrl, setNewWebhookUrl] = useState('')
   const [newWebhookEvents, setNewWebhookEvents] = useState([...WEBHOOK_EVENTS])
   const [webhookSaving, setWebhookSaving] = useState(false)
+  // Delivery log (design idea §3.3): keyed by webhook id, null while never
+  // opened, [] while loading/empty, array of delivery rows once fetched.
+  const [openDeliveryLog, setOpenDeliveryLog] = useState(null)
+  const [deliveries, setDeliveries] = useState({})
+  const [deliveriesLoading, setDeliveriesLoading] = useState(false)
 
   function showToast(msg, type = 'success') {
     setToast({ msg, type })
@@ -40,20 +49,20 @@ export default function Settings() {
       const token = await getToken()
       if (!token) { navigate('/auth'); return }
 
-      const statusRes = await fetch('/auth/status', { headers: { Authorization: `Bearer ${token}` } })
+      const statusRes = await fetch(apiUrl('/auth/status'), { headers: { Authorization: `Bearer ${token}` } })
       if (!statusRes.ok) { navigate('/auth'); return }
       const { user, plan: p } = await statusRes.json()
       setPlan(p || 'free')
       setUserEmail(user?.email || '')
 
       if (p === 'business') {
-        const brandRes = await fetch('/user/branding', { headers: { Authorization: `Bearer ${token}` } })
+        const brandRes = await fetch(apiUrl('/user/branding'), { headers: { Authorization: `Bearer ${token}` } })
         if (brandRes.ok) {
           const { logoUrl: l, accentColor: a } = await brandRes.json()
           if (l) setLogoUrl(l)
           if (a) setAccentColor(a)
         }
-        const hookRes = await fetch('/api/webhooks', { headers: { Authorization: `Bearer ${token}` } })
+        const hookRes = await fetch(apiUrl('/api/webhooks'), { headers: { Authorization: `Bearer ${token}` } })
         if (hookRes.ok) {
           const { webhooks: w } = await hookRes.json()
           setWebhooks(w || [])
@@ -74,7 +83,7 @@ export default function Settings() {
   async function handleUpgrade(priceId) {
     if (!priceId) { showToast('Stripe price ID not configured.', 'error'); return }
     const token = await getToken()
-    const res = await fetch('/billing/checkout', {
+    const res = await fetch(apiUrl('/billing/checkout'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ priceId }),
@@ -86,7 +95,7 @@ export default function Settings() {
 
   async function handleManageBilling() {
     const token = await getToken()
-    const res = await fetch('/billing/portal', {
+    const res = await fetch(apiUrl('/billing/portal'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ returnUrl: `${window.location.origin}/settings` }),
@@ -102,7 +111,7 @@ export default function Settings() {
     const form = new FormData()
     form.append('accentColor', accentColor)
     if (logoInputRef.current?.files?.[0]) form.append('logo', logoInputRef.current.files[0])
-    const res = await fetch('/user/branding', { method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: form })
+    const res = await fetch(apiUrl('/user/branding'), { method: 'PATCH', headers: { Authorization: `Bearer ${token}` }, body: form })
     setBrandingSaving(false)
     if (res.ok) {
       const { logoUrl: l, accentColor: a } = await res.json()
@@ -118,7 +127,7 @@ export default function Settings() {
     if (!newWebhookUrl.trim()) return
     setWebhookSaving(true)
     const token = await getToken()
-    const res = await fetch('/api/webhooks', {
+    const res = await fetch(apiUrl('/api/webhooks'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify({ url: newWebhookUrl.trim(), events: newWebhookEvents }),
@@ -136,9 +145,27 @@ export default function Settings() {
 
   async function deleteWebhook(id) {
     const token = await getToken()
-    await fetch(`/api/webhooks/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
+    await fetch(apiUrl(`/api/webhooks/${id}`), { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } })
     setWebhooks((w) => w.filter((h) => h.id !== id))
     showToast('Webhook deleted.')
+  }
+
+  // Design idea §3.3: lets a host see recent delivery attempts (status
+  // code, timestamp, error) for a webhook without leaving Settings.
+  async function toggleDeliveryLog(id) {
+    if (openDeliveryLog === id) { setOpenDeliveryLog(null); return }
+    setOpenDeliveryLog(id)
+    if (deliveries[id]) return
+    setDeliveriesLoading(true)
+    const token = await getToken()
+    const res = await fetch(apiUrl(`/api/webhooks/${id}/deliveries`), { headers: { Authorization: `Bearer ${token}` } })
+    setDeliveriesLoading(false)
+    if (res.ok) {
+      const { deliveries: d } = await res.json()
+      setDeliveries((prev) => ({ ...prev, [id]: d || [] }))
+    } else {
+      setDeliveries((prev) => ({ ...prev, [id]: [] }))
+    }
   }
 
   const limits = PLAN_LIMITS[plan] || PLAN_LIMITS.free
@@ -277,12 +304,40 @@ export default function Settings() {
           <div className="space-y-3 mb-5">
             {webhooks.length === 0 && <div className="text-slate-500 font-mono text-xs">No webhooks configured.</div>}
             {webhooks.map((h) => (
-              <div key={h.id} className="flex items-center justify-between gap-3 px-4 py-3 bg-slate-900 border border-slate-800 rounded-xl">
-                <div>
-                  <div className="text-slate-200 text-xs font-mono break-all">{h.url}</div>
-                  <div className="text-slate-500 text-[10px] font-mono mt-0.5">{(h.events || []).join(', ')}</div>
+              <div key={h.id} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                <div className="flex items-center justify-between gap-3 px-4 py-3">
+                  <div className="min-w-0">
+                    <div className="text-slate-200 text-xs font-mono break-all">{h.url}</div>
+                    <div className="text-slate-500 text-[10px] font-mono mt-0.5">{(h.events || []).join(', ')}</div>
+                  </div>
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    <button onClick={() => toggleDeliveryLog(h.id)} className="text-slate-400 hover:text-slate-200 text-xs font-mono">
+                      {openDeliveryLog === h.id ? 'Hide log' : 'View log'}
+                    </button>
+                    <button onClick={() => deleteWebhook(h.id)} className="text-red-400 hover:text-red-300 text-xs font-mono">Delete</button>
+                  </div>
                 </div>
-                <button onClick={() => deleteWebhook(h.id)} className="text-red-400 hover:text-red-300 text-xs font-mono flex-shrink-0">Delete</button>
+                {openDeliveryLog === h.id && (
+                  <div className="border-t border-slate-800 px-4 py-3 bg-slate-950/60">
+                    {deliveriesLoading && !deliveries[h.id] ? (
+                      <div className="text-slate-500 font-mono text-[11px]">Loading&hellip;</div>
+                    ) : !deliveries[h.id]?.length ? (
+                      <div className="text-slate-500 font-mono text-[11px]">No deliveries yet. This fills in as events fire.</div>
+                    ) : (
+                      <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                        {deliveries[h.id].map((d) => (
+                          <div key={d.id} className="flex items-center justify-between gap-3 text-[11px] font-mono">
+                            <span className="text-slate-500 flex-shrink-0">{d.created_at ? new Date(d.created_at).toLocaleString() : '—'}</span>
+                            <span className="text-slate-400 flex-1 truncate">{d.event}</span>
+                            <span className={d.ok ? 'text-emerald-400 flex-shrink-0' : 'text-red-400 flex-shrink-0'}>
+                              {d.ok ? (d.status_code || 'OK') : (d.status_code || d.error || 'failed')}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
           </div>

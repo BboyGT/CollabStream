@@ -74,11 +74,17 @@ function MessageGroup({ messages, isOwn, unreadIndex, groupIndex }) {
         {messages.map((msg, i) => {
           const isLast = i === messages.length - 1
           const isFirst = i === 0
+          const isPrivate = msg.target && msg.target !== 'all'
           return (
             <div key={msg._id || i} style={{ display: 'flex', flexDirection: 'column', alignItems: isOwn ? 'flex-end' : 'flex-start' }}>
               {isFirst && !isOwn && msg.from && (
                 <span style={{ fontSize: 10, color: 'rgba(100,116,139,1)', fontFamily: 'monospace', marginBottom: 2, paddingLeft: 6 }}>
                   {msg.from}
+                </span>
+              )}
+              {isPrivate && (
+                <span style={{ fontSize: 9, color: 'rgba(245,158,11,0.75)', fontFamily: 'monospace', marginBottom: 2, paddingLeft: isOwn ? 0 : 6, paddingRight: isOwn ? 6 : 0 }}>
+                  → private
                 </span>
               )}
               {msg.type === 'file' ? (
@@ -234,14 +240,14 @@ export default function ChatPanel({
   function handleSend() {
     const t = text.trim()
     if (!t) return
-    onSend?.(t)
+    onSend?.(t, selectedTarget)
     setText('')
   }
 
   function handleFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
-    onSendFile?.(file)
+    onSendFile?.(file, selectedTarget)
     e.target.value = ''
   }
 

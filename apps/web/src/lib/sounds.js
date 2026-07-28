@@ -1,14 +1,30 @@
 /**
  * sounds.js — pure AudioContext synthesis, no audio files.
  * All sounds are gated: only play when document.visibilityState === 'visible'.
+ *
+ * Uses one shared, lazily-created AudioContext for the whole page lifetime
+ * instead of a fresh one per call. Every play*() function used to call
+ * `new AudioContext()` and never close it — over a long session with many
+ * join/leave/chat events, that's a genuine resource leak: browsers cap the
+ * number of simultaneously live AudioContexts (Chrome allows only a
+ * handful), and once that cap is hit, `new AudioContext()` throws — which
+ * was silently swallowed by each function's try/catch, so sound effects
+ * would just go silent for the rest of the session with no visible error.
  */
 
 function gate() {
   return document.visibilityState === 'visible'
 }
 
+let sharedCtx = null
 function ctx() {
-  return new (window.AudioContext || window.webkitAudioContext)()
+  if (!sharedCtx || sharedCtx.state === 'closed') {
+    sharedCtx = new (window.AudioContext || window.webkitAudioContext)()
+  }
+  // Browsers suspend a context that was created (or left idle) outside a
+  // user gesture; resume is a no-op if already running.
+  if (sharedCtx.state === 'suspended') sharedCtx.resume().catch(() => {})
+  return sharedCtx
 }
 
 function tone(audioCtx, freq, type, startTime, duration, gain) {

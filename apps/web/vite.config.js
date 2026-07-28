@@ -1,12 +1,17 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+const allowedHosts = (process.env.VITE_ALLOWED_HOSTS || '')
+  .split(',')
+  .map((host) => host.trim())
+  .filter(Boolean)
+
 export default defineConfig({
   plugins: [react()],
   server: {
     host: true,
     port: 5173,
-    allowedHosts: ['maude-untickled-collectively.ngrok-free.dev'],
+    allowedHosts,
     proxy: {
       '/api': { target: 'http://localhost:3001', changeOrigin: true },
       '/session': { target: 'http://localhost:3001', changeOrigin: true },
@@ -16,6 +21,18 @@ export default defineConfig({
       '/billing': { target: 'http://localhost:3001', changeOrigin: true },
       '/user': { target: 'http://localhost:3001', changeOrigin: true },
       '/ws': { target: 'ws://localhost:3001', ws: true, changeOrigin: true },
+    },
+  },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined
+          if (id.includes('@supabase')) return 'supabase'
+          if (id.includes('qrcode')) return 'qrcode'
+          return undefined
+        },
+      },
     },
   },
 })
