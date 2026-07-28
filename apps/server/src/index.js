@@ -3,6 +3,7 @@ require('dotenv').config()
 console.log('CollabStream signaling server - built by Godstime Aburu')
 const express = require('express')
 const cors = require('cors')
+const crypto = require('crypto')
 const dns = require('dns').promises
 const http = require('http')
 const https = require('https')
@@ -58,6 +59,21 @@ const nanoid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 21)
 const tokenid = customAlphabet('abcdefghijklmnopqrstuvwxyz0123456789', 32)
 
 const app = express()
+app.disable('x-powered-by')
+if (process.env.TRUST_PROXY === 'true') app.set('trust proxy', 1)
+
+function securityHeaders(_req, res, next) {
+  res.setHeader('X-Content-Type-Options', 'nosniff')
+  res.setHeader('X-Frame-Options', 'DENY')
+  res.setHeader('Referrer-Policy', 'no-referrer')
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(self), display-capture=(self), geolocation=()')
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=15552000; includeSubDomains')
+  }
+  next()
+}
+
+app.use(securityHeaders)
 
 function parseAllowedOrigins(value = '') {
   return value
@@ -70,6 +86,8 @@ const allowedOrigins = parseAllowedOrigins(
   process.env.CORS_ORIGINS || process.env.PUBLIC_WEB_ORIGIN || ''
 )
 const localDevOrigin = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/
+const jsonBodyLimit = process.env.JSON_BODY_LIMIT || '1mb'
+const WEBHOOK_EVENTS = new Set(['session.start', 'session.end', 'guest.join', 'recording.ready'])
 
 app.use(cors({
   credentials: true,
@@ -84,8 +102,73 @@ app.use(cors({
   },
 }))
 
+function getClientIp(req) {
+  return req.ip || req.socket.remoteAddress || 'unknown'
+}
+
+function makeRateLimit({ prefix, windowMs = rateLimitWindowMs, max = rateLimitMax }) {
+  return (req, res, next) => {
+    const now = Date.now()
+    const key = `${prefix}:${getClientIp(req)}`
+    const bucket = rateLimitBuckets.get(key)
+
+    if (!bucket || bucket.resetAt <= now) {
+      rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs })
+      return next()
+    }
+
+    bucket.count += 1
+    if (bucket.count > max) {
+      res.setHeader('Retry-After', Math.ceil((bucket.resetAt - now) / 1000))
+      return res.status(429).json({ error: 'rate-limit' })
+    }
+
+    return next()
+  }
+}
+
+const authStatusLimit = makeRateLimit({ prefix: 'auth-status', max: 45 })
+const sessionCreateLimit = makeRateLimit({ prefix: 'session-create', windowMs: 10 * 60_000, max: 20 })
+const joinResolveLimit = makeRateLimit({ prefix: 'join-resolve', max: 90 })
+const billingLimit = makeRateLimit({ prefix: 'billing', windowMs: 10 * 60_000, max: 20 })
+const webhookCreateLimit = makeRateLimit({ prefix: 'webhook-create', windowMs: 10 * 60_000, max: 20 })
+const adminLimit = makeRateLimit({ prefix: 'admin', max: 30 })
+const billingWebhookLimit = makeRateLimit({ prefix: 'billing-webhook', max: 180 })
+
+function configuredStripePrices() {
+  return [
+    { priceId: process.env.STRIPE_PRO_PRICE_ID, plan: 'pro' },
+    { priceId: process.env.STRIPE_BUSINESS_PRICE_ID, plan: 'business' },
+  ].filter((entry) => entry.priceId)
+}
+
+function planForStripePrice(priceId) {
+  return configuredStripePrices().find((entry) => entry.priceId === priceId)?.plan || null
+}
+
+function publicWebUrl() {
+  return process.env.WEB_URL || process.env.PUBLIC_WEB_ORIGIN || 'http://localhost:5173'
+}
+
+function safeBillingReturnUrl(rawUrl, fallbackPath) {
+  const fallback = new URL(fallbackPath, publicWebUrl()).toString()
+  if (!rawUrl) return fallback
+  try {
+    const candidate = new URL(rawUrl)
+    const allowedOrigin = new URL(publicWebUrl()).origin
+    return candidate.origin === allowedOrigin ? candidate.toString() : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function normalizeWebhookEvents(events) {
+  if (!Array.isArray(events) || !events.length) return [...WEBHOOK_EVENTS]
+  return [...new Set(events.filter((event) => WEBHOOK_EVENTS.has(event)))]
+}
+
 // Webhook route must use raw body before express.json() is registered
-app.post('/billing/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+app.post('/billing/webhook', billingWebhookLimit, express.raw({ type: 'application/json', limit: jsonBodyLimit }), async (req, res) => {
   if (!stripe) return res.status(503).json({ error: 'billing-not-configured' })
   if (!supabase) return res.status(503).json({ error: 'supabase-not-configured' })
   const sig = req.headers['stripe-signature']
@@ -106,7 +189,11 @@ app.post('/billing/webhook', express.raw({ type: 'application/json' }), async (r
     if (!userId) return res.json({ received: true })
     const lineItems = await stripe.checkout.sessions.listLineItems(session.id, { limit: 1 })
     const priceId = lineItems.data[0]?.price?.id
-    const plan = priceId === process.env.STRIPE_BUSINESS_PRICE_ID ? 'business' : 'pro'
+    const plan = planForStripePrice(priceId)
+    if (!plan) {
+      console.warn('[billing] ignoring checkout for unconfigured price:', priceId || 'missing')
+      return res.json({ received: true })
+    }
     await supabase.from('profiles').update({
       stripe_customer_id: session.customer,
       stripe_subscription_id: session.subscription,
@@ -122,8 +209,8 @@ app.post('/billing/webhook', express.raw({ type: 'application/json' }), async (r
   if (event.type === 'customer.subscription.updated') {
     const customerId = session.customer
     const priceId = session.items?.data?.[0]?.price?.id
-    if (priceId) {
-      const plan = priceId === process.env.STRIPE_BUSINESS_PRICE_ID ? 'business' : 'pro'
+    const plan = planForStripePrice(priceId)
+    if (plan) {
       await supabase.from('profiles').update({ plan }).eq('stripe_customer_id', customerId)
     }
   }
@@ -131,7 +218,7 @@ app.post('/billing/webhook', express.raw({ type: 'application/json' }), async (r
   res.json({ received: true })
 })
 
-app.use(express.json())
+app.use(express.json({ limit: jsonBodyLimit }))
 
 function rateLimit(req, res, next) {
   if (req.path === '/health') return next()
@@ -339,7 +426,7 @@ app.get('/public-host', (_req, res) => {
 })
 
 // GET /auth/status — verify bearer token, return user + plan
-app.get('/auth/status', async (req, res) => {
+app.get('/auth/status', authStatusLimit, async (req, res) => {
   if (!supabase) return res.status(503).json({ error: 'supabase-not-configured' })
   const token = req.headers.authorization?.replace('Bearer ', '').trim()
   if (!token) return res.status(401).json({ error: 'Not authenticated' })
@@ -350,7 +437,7 @@ app.get('/auth/status', async (req, res) => {
 })
 
 // POST /session — create session (auth required, plan limits enforced)
-app.post('/session', requireAuth, async (req, res) => {
+app.post('/session', sessionCreateLimit, requireAuth, async (req, res) => {
   const { sessionName, maxGuests, joinMode, durationMinutes, scheduled } = req.body || {}
 
   // Plan-enforced limits
@@ -432,7 +519,7 @@ app.get('/session/:sessionId/branding', async (req, res) => {
   res.json({ logoUrl, accentColor: profile?.accent_color || '#22d3ee' })
 })
 
-app.get('/api/join/:code', (req, res) => {
+app.get('/api/join/:code', joinResolveLimit, (req, res) => {
   const room = getRoomByJoinCode(req.params.code)
   if (!room) return res.status(404).json({ error: 'not-found' })
   if (room.locked || room.joinMode === 'locked') return res.status(423).json({ error: 'room-locked' })
@@ -451,7 +538,7 @@ app.get('/api/join/:code', (req, res) => {
   })
 })
 
-app.get('/join/:code', (req, res) => {
+app.get('/join/:code', joinResolveLimit, (req, res) => {
   const room = getRoomByJoinCode(req.params.code)
   if (!room) return res.status(404).json({ error: 'not-found' })
   if (room.locked || room.joinMode === 'locked') return res.status(423).json({ error: 'room-locked' })
@@ -589,17 +676,18 @@ app.patch('/user/branding', requireAuth, requirePlan('business'), logoUpload.sin
 })
 
 // ── Billing ────────────────────────────────────────────────────────────────────
-app.post('/billing/checkout', requireAuth, async (req, res) => {
+app.post('/billing/checkout', billingLimit, requireAuth, async (req, res) => {
   if (!stripe) return res.status(503).json({ error: 'billing-not-configured' })
   const { priceId, successUrl, cancelUrl } = req.body || {}
   if (!priceId) return res.status(400).json({ error: 'priceId required' })
+  if (!planForStripePrice(priceId)) return res.status(400).json({ error: 'invalid-price' })
   try {
     const session = await stripe.checkout.sessions.create({
       customer_email: req.user.email,
       line_items: [{ price: priceId, quantity: 1 }],
       mode: 'subscription',
-      success_url: successUrl || `${process.env.WEB_URL || 'http://localhost:5173'}/settings?checkout=success`,
-      cancel_url: cancelUrl || `${process.env.WEB_URL || 'http://localhost:5173'}/settings`,
+      success_url: safeBillingReturnUrl(successUrl, '/settings?checkout=success'),
+      cancel_url: safeBillingReturnUrl(cancelUrl, '/settings'),
       metadata: { userId: req.user.id },
     })
     res.json({ url: session.url })
@@ -609,7 +697,7 @@ app.post('/billing/checkout', requireAuth, async (req, res) => {
   }
 })
 
-app.post('/billing/portal', requireAuth, async (req, res) => {
+app.post('/billing/portal', billingLimit, requireAuth, async (req, res) => {
   if (!stripe) return res.status(503).json({ error: 'billing-not-configured' })
   const { returnUrl } = req.body || {}
   const customerId = req.profile?.stripe_customer_id
@@ -617,7 +705,7 @@ app.post('/billing/portal', requireAuth, async (req, res) => {
   try {
     const portalSession = await stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: returnUrl || `${process.env.WEB_URL || 'http://localhost:5173'}/settings`,
+      return_url: safeBillingReturnUrl(returnUrl, '/settings'),
     })
     res.json({ url: portalSession.url })
   } catch (err) {
@@ -632,10 +720,18 @@ app.get('/api/webhooks', requireAuth, requirePlan('business'), async (req, res) 
   res.json({ webhooks: data || [] })
 })
 
-app.post('/api/webhooks', requireAuth, requirePlan('business'), async (req, res) => {
+app.post('/api/webhooks', webhookCreateLimit, requireAuth, requirePlan('business'), async (req, res) => {
   const { url, events } = req.body || {}
   if (!url) return res.status(400).json({ error: 'url required' })
-  const { data, error } = await supabase.from('webhooks').insert({ host_id: req.user.id, url, events: events || ['session.start', 'session.end', 'guest.join', 'recording.ready'] }).select().single()
+  let validated
+  try {
+    validated = await validateWebhookUrl(url)
+  } catch (err) {
+    return res.status(400).json({ error: err.message })
+  }
+  const selectedEvents = normalizeWebhookEvents(events)
+  if (!selectedEvents.length) return res.status(400).json({ error: 'invalid webhook events' })
+  const { data, error } = await supabase.from('webhooks').insert({ host_id: req.user.id, url: validated.url, events: selectedEvents }).select().single()
   if (error) return res.status(500).json({ error: error.message })
   res.json({ webhook: data })
 })
@@ -699,14 +795,20 @@ function requireAdminToken(req, res) {
   }
   const header = req.headers.authorization || ''
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : ''
-  if (!token || token !== expectedToken) {
+  const tokenBuffer = Buffer.from(token)
+  const expectedBuffer = Buffer.from(expectedToken)
+  const tokenMatches = tokenBuffer.length === expectedBuffer.length &&
+    crypto.timingSafeEqual(tokenBuffer, expectedBuffer)
+  if (!token || !tokenMatches) {
     res.status(403).json({ error: 'forbidden' })
     return false
   }
-  const ip = req.ip || req.socket.remoteAddress || 'unknown'
+  const ip = getClientIp(req)
   console.warn(`[admin] ${new Date().toISOString()} ip=${ip} ${req.method} ${req.originalUrl}`)
   return true
 }
+
+app.use('/admin', adminLimit)
 
 app.get('/admin/sessions', async (req, res) => {
   if (!requireAdminToken(req, res)) return

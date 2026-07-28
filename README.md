@@ -196,11 +196,12 @@ npm run sync-ngrok
 - Hosts can kick a disruptive guest, or kick-and-ban to also block their IP from getting a new token.
 - Authenticated host routes verify Supabase JWTs.
 - Plan limits are enforced server-side.
-- Stripe webhooks verify signatures before updating plans.
+- Stripe checkout only accepts configured Pro/Business price IDs, redirects only back to the configured app origin, and webhooks verify signatures before updating plans.
 - R2 uploads are restricted by MIME type and configured size limits.
-- Business webhooks require HTTPS, reject private-network targets, and pin the validated IP for delivery to close a DNS-rebinding gap.
+- API responses include baseline security headers, JSON request bodies are size-limited, and sensitive routes have route-specific rate limits in addition to the global IP throttle.
+- Business webhooks require HTTPS, reject private-network targets before they are saved, and pin the validated IP for delivery to close a DNS-rebinding gap.
 - Business hosts can view a delivery log (status code, timestamp, error) for each configured webhook from Settings.
-- Admin routes authenticate via an `Authorization: Bearer` header (never a query param) and log every admin action with the requesting IP.
+- Admin routes authenticate via an `Authorization: Bearer` header (never a query param), compare tokens with constant-time comparison, rate-limit attempts, and log every admin action with the requesting IP.
 - WebRTC connections fall back to a TURN relay when configured (`VITE_TURN_URLS` etc. — see `apps/web/.env.example`) for guests behind symmetric NAT or strict firewalls; STUN-only works for most networks but isn't guaranteed to traverse every one.
 - The companion's local remote-control relay (`ws://127.0.0.1:7734`) only accepts connections from an allowlisted `Origin`, so a malicious webpage open in any browser on the host's machine can't silently connect and arm/drive OS-level input. This does not protect against a different local process deliberately forging its Origin header — see `apps/companion/README.md` for the full threat model and what a complete fix would require.
 
