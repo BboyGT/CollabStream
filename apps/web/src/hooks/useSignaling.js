@@ -9,6 +9,16 @@ const DEFAULT_SIGNAL_URL = (() => {
 const SIGNAL_URL = import.meta.env.VITE_SIGNAL_URL || DEFAULT_SIGNAL_URL
 const MAX_RETRIES = 5
 
+function signalUrlForSession(sessionId) {
+  try {
+    const url = new URL(SIGNAL_URL)
+    if (sessionId) url.searchParams.set('sessionId', sessionId)
+    return url.toString()
+  } catch {
+    return SIGNAL_URL
+  }
+}
+
 export default function useSignaling(sessionId, role, onMessage, guestName = '') {
   const wsRef = useRef(null)
   const retriesRef = useRef(0)
@@ -29,7 +39,7 @@ export default function useSignaling(sessionId, role, onMessage, guestName = '')
       wsRef.current.close()
     }
 
-    const ws = new WebSocket(SIGNAL_URL)
+    const ws = new WebSocket(signalUrlForSession(sessionId))
     wsRef.current = ws
 
     ws.onopen = () => {

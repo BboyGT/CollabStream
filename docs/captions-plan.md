@@ -1,7 +1,9 @@
 # Live captions / transcription: plan
 
-**Status: planning only.** Not built — the "free" path still involves real product decisions
-(privacy disclosure, browser support tradeoffs) that shouldn't be picked silently.
+**Status: built.** The client-side Web Speech API path is implemented in `useCaptions.js`, with
+host/guest data-channel broadcast, a rolling caption overlay, the `VITE_FEATURE_CAPTIONS` flag,
+browser-support handling, and a visible privacy note beside the toggle. This is still best-effort
+browser speech recognition, not a server-side transcription service.
 
 ## The low-risk path: client-side Web Speech API, text broadcast over the existing data channel
 
@@ -50,11 +52,22 @@ scope for a plan document to just pick — flagging it exists as the "if you out
 path" option, not proposing to build it now.
 
 ## Rough checklist (client-side Web Speech API path only)
-- [ ] `useCaptions.js` hook: start/stop, interim vs. final results, error handling for
+- [x] `useCaptions.js` hook: start/stop, interim vs. final results, error handling for
       unsupported browsers (`SpeechRecognition` undefined) and for permission denial.
-- [ ] Wire into `HostRoom.jsx`/`GuestRoom.jsx`: broadcast final segments as `{type:'caption',...}`.
-- [ ] Receiving-side rolling caption display, per speaker, auto-fade.
-- [ ] `flags.js`: `captions` flag.
-- [ ] Visible browser-support messaging (decide: hide toggle vs. show with a caveat).
-- [ ] Visible, honest privacy disclosure next to the captions toggle before it can be enabled —
+- [x] Wire into `HostRoom.jsx`/`GuestRoom.jsx`: broadcast final segments as `{type:'caption',...}`.
+- [x] Receiving-side rolling caption display, per speaker, auto-fade.
+- [x] `flags.js`: `captions` flag.
+- [x] Visible browser-support messaging (decide: hide toggle vs. show with a caveat).
+- [x] Visible, honest privacy disclosure next to the captions toggle before it can be enabled -
       this is the one item on this list that isn't optional if the feature ships at all.
+
+## Implementation notes
+
+- The first version uses browser speech recognition only. Unsupported browsers show a Chrome/Edge
+  note and keep the toggle disabled.
+- Captions broadcast text only over the existing `annotation` data channel; audio still does not
+  go through the CollabStream server for this feature.
+- Chrome/Edge may send mic audio to the browser speech provider, so the footer shows a visible
+  "Uses browser speech service" disclosure next to the toggle.
+- Host captions broadcast directly to guests. Guest captions are sent to the host, then the host
+  relays them to the other guests, matching the app's existing hub model.

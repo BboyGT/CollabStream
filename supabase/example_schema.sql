@@ -68,6 +68,7 @@ create trigger on_auth_user_created
 create table if not exists public.sessions (
   id text primary key,
   host_id uuid references auth.users (id) on delete set null,
+  host_token text,
   session_name text,
   join_code text,
   short_code text,
@@ -76,7 +77,7 @@ create table if not exists public.sessions (
   duration_minutes integer not null default 120,
   peak_guests integer not null default 0,
   recording_url text,
-  status text not null default 'active' check (status in ('active', 'ended')),
+  status text not null default 'active' check (status in ('scheduled', 'active', 'ended')),
   started_at timestamptz not null default now(),
   ended_at timestamptz
 );

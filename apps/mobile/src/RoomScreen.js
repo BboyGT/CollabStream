@@ -15,7 +15,7 @@ import {
   RTCIceCandidate,
   mediaDevices,
 } from 'react-native-webrtc'
-import { WS_URL } from './config'
+import { wsUrlForSession } from './config'
 
 const ICE_SERVERS = [
   { urls: 'stun:stun.l.google.com:19302' },
@@ -101,7 +101,7 @@ export default function RoomScreen({ route, navigation }) {
     }
 
     function setup() {
-      const ws = new WebSocket(WS_URL)
+      const ws = new WebSocket(wsUrlForSession(sessionId))
       wsRef.current = ws
 
       ws.onopen = () => {

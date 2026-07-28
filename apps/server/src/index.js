@@ -19,7 +19,7 @@ const {
 } = require('./rooms')
 const {
   createSessionRecord, endSessionRecord,
-  listSessionHistory, getAuditTrail, getDashboardStats,
+  listSessionHistory, getAuditTrail, getSessionAnalytics, getDashboardStats,
   pruneOldData, getStats, setRecordingUrl,
   logWebhookDelivery, getWebhookDeliveries,
 } = require('./db')
@@ -306,6 +306,8 @@ async function fireWebhook(hostId, event, payload) {
 }
 
 setLifecycleHandlers({
+  onSessionStart: (hostId, sessionId, sessionName) =>
+    fireWebhook(hostId, 'session.start', { sessionId, sessionName }),
   onGuestJoin: (hostId, sessionId, peerId, sessionName) =>
     fireWebhook(hostId, 'guest.join', { sessionId, peerId, sessionName }),
   onSessionEnd: (hostId, sessionId, sessionName) =>
@@ -391,7 +393,7 @@ app.post('/session', requireAuth, async (req, res) => {
   }
 
   createRoom(sessionId, hostToken, joinCode, shortCode, opts)
-  await createSessionRecord(sessionId, req.user.id, { ...opts, joinCode, shortCode })
+  await createSessionRecord(sessionId, req.user.id, { ...opts, hostToken, joinCode, shortCode })
   if (!opts.scheduled) await fireWebhook(req.user.id, 'session.start', { sessionId, sessionName: opts.sessionName })
 
   res.json({ sessionId, token: hostToken, joinCode, shortCode, ...opts })
@@ -505,6 +507,12 @@ app.get('/api/sessions/:sessionId/audit', requireAuth, requirePlan('pro'), async
   if (!sess || sess.host_id !== req.user.id) return res.status(404).json({ error: 'not-found' })
   const events = await getAuditTrail(req.params.sessionId)
   res.json({ events })
+})
+
+app.get('/api/sessions/:sessionId/analytics', requireAuth, requirePlan('pro'), async (req, res) => {
+  const analytics = await getSessionAnalytics(req.params.sessionId, req.user.id)
+  if (!analytics) return res.status(404).json({ error: 'not-found' })
+  res.json({ analytics })
 })
 
 // ── Cloud recording (Business plan) ───────────────────────────────────────────

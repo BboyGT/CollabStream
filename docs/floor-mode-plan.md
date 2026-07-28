@@ -250,14 +250,12 @@ lift it'd be. None of these are built — this is a backlog, not a promise.
       knock queue modal. Rate-limited server-side (5 msgs/min per pending guest) and
       sanitized separately from display names. Server-side covered by `test/rooms.test.js`/
       `test/relay.test.js`, part of the same 62/62 passing suite.)*
-- [ ] **Live captions / transcription.** Not present. Common competitive feature (the landing
+- [x] **Live captions / transcription.** Built. Common competitive feature (the landing
       page comparison table doesn't currently claim it either). Meaningfully larger lift — needs
       either a browser Speech Recognition API integration (free, lower quality, English-centric)
       or a paid transcription service (better quality, real ongoing cost, another vendor
-      dependency to manage). **Not built this pass** — full plan in `docs/captions-plan.md`. Even
-      the "free" Web Speech API path involves a real disclosure decision that shouldn't be made
-      silently: in most current Chrome versions that API sends audio to Google's servers, unlike
-      everything else in this app, which is peer-to-peer.
+      dependency to manage). The first version uses the Web Speech API with a visible browser
+      speech-service disclosure beside the toggle; see `docs/captions-plan.md`.
 - [ ] **Background blur / virtual background.** Not verified either way — I didn't find it while
       reading the camera pipeline, but I also didn't go looking specifically for it, so treat
       this as "probably absent" rather than confirmed. Common modern expectation. Medium lift
@@ -265,15 +263,9 @@ lift it'd be. None of these are built — this is a backlog, not a promise.
       full plan in `docs/background-blur-plan.md`. Genuinely risky to improvise: real-time
       segmentation needs a new ML dependency (e.g. MediaPipe Selfie Segmentation) with real
       performance cost that can't be evaluated without a physical device to test on.
-- [ ] **Meeting analytics.** Speculative addition, not a found gap — the audit log and dashboard
-      already exist; extending them with things like per-guest talk time (which floor mode would
-      make genuinely easy to compute) or attendance duration would build naturally on top of
-      what's already there. Small-medium lift once floor mode exists. **Not built this pass** —
-      genuinely small now that floor mode's audit events (`floor-granted:<peerId>`,
-      `floor-revoked`) already carry timestamps in `rooms.js`'s audit log; computing talk-time
-      deltas from consecutive grant/revoke pairs and surfacing them on the Dashboard is a natural
-      next increment, not a redesign. No dedicated plan doc — small enough to just build next
-      time, doesn't need the same up-front design pass as the four above.
+- [x] **Meeting analytics.** Built from the existing audit log and dashboard
+      data. The first version computes talk-time deltas from consecutive `floor-granted:<peerId>`
+      / `floor-revoked` audit events and surfaces them from the Dashboard's Analytics action.
 - [ ] **Breakout rooms.** Speculative, explicitly flagged as probably out of scope — this is a
       much bigger architectural change (multiple concurrent host-hub groups within one session)
       and shouldn't be scoped casually alongside the smaller items above. **Not built** — full
@@ -296,10 +288,8 @@ lift it'd be. None of these are built — this is a backlog, not a promise.
       starts at actual start, not creation time; the host can join and chat in the lobby before
       starting. Overflow guests (exceeding the cap) fall back into the existing knock/approval
       panel with zero new host-side UI needed. Server-side covered by `test/rooms.test.js`/
-      `test/relay.test.js`, 86/86 passing. Not built this pass: a Dashboard listing of scheduled-
-      but-not-started sessions — "Schedule for later" currently still enters the lobby
-      immediately rather than returning to the homepage, since there'd otherwise be no way back
-      to it.)*
+      `test/relay.test.js`, 86/86 passing. Dashboard now lists scheduled-but-not-started sessions
+      and lets the owning host reopen them.)*
 - [x] **Small polish items already found during the earlier audit, not yet fixed:** the guest-cap
       selector's "Unlimited" option is dead code (never actually offered, since the option list
       never includes `null`); "Business = unlimited session duration" is misleading — sessions

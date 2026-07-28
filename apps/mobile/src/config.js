@@ -13,3 +13,8 @@ const configuredServerUrl = trimSlash(
 export const SERVER_URL = configuredServerUrl
 export const WS_URL = configuredServerUrl.replace(/^http/, 'ws') + '/ws'
 export const NEEDS_SERVER_CONFIG = configuredServerUrl === DEFAULT_SERVER_URL
+
+export function wsUrlForSession(sessionId) {
+  const suffix = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ''
+  return `${WS_URL}${suffix}`
+}

@@ -11,6 +11,7 @@ import useScreenShare, { SHARE_QUALITIES } from '../hooks/useScreenShare.js'
 import useAnnotation from '../hooks/useAnnotation.js'
 import useCompanion from '../hooks/useCompanion.js'
 import useChat from '../hooks/useChat.js'
+import useCaptions from '../hooks/useCaptions.js'
 import ScreenView from '../components/ScreenView.jsx'
 import VideoFeed from '../components/VideoFeed.jsx'
 import VideoTile from '../components/VideoTile.jsx'
@@ -23,6 +24,7 @@ import { getPublicOrigin, guestJoinUrl, resolveJoinCode } from '../lib/session.j
 import { apiUrl } from '../lib/api.js'
 import { getToken } from '../lib/auth.js'
 import RemoteAudio from '../components/RemoteAudio.jsx'
+import CaptionsOverlay from '../components/CaptionsOverlay.jsx'
 import MediaPermissionScreen from '../components/MediaPermissionScreen.jsx'
 import useSnapshot from '../hooks/useSnapshot.js'
 import useNetworkQuality from '../hooks/useNetworkQuality.js'
@@ -236,6 +238,8 @@ export default function HostRoom() {
   const [sideTab, setSideTab] = useState('chat')
   const [chatTarget, setChatTarget] = useState('all')
   const [unreadCount, setUnreadCount] = useState(0)
+  const [captionsEnabled, setCaptionsEnabled] = useState(false)
+  const [captions, setCaptions] = useState([])
   const [elapsed, setElapsed] = useState(0)
   const timerRef = useRef(null)
   const sessionStartRef = useRef(null)
@@ -512,6 +516,28 @@ export default function HostRoom() {
   const { takeSnapshot } = useSnapshot(videoRef, canvasRef)
   const chat = useChat(chatDispatch, 'host')
 
+  const addCaption = useCallback((caption) => {
+    const id = caption.id || `${Date.now()}-${Math.random()}`
+    setCaptions((items) => [...items.slice(-5), { id, ts: Date.now(), ...caption }])
+    setTimeout(() => setCaptions((items) => items.filter((item) => item.id !== id)), 8000)
+  }, [])
+
+  const captionsHook = useCaptions(useCallback((text) => {
+    const msg = { type: 'caption', text, from: 'Host', fromPeerId: 'host', ts: Date.now() }
+    addCaption(msg)
+    hostRTC.broadcast('annotation', msg)
+  }, [addCaption, hostRTC]))
+
+  const toggleCaptions = useCallback(() => {
+    if (captionsHook.listening) {
+      captionsHook.stop()
+      setCaptionsEnabled(false)
+      return
+    }
+    const started = captionsHook.start()
+    if (started) setCaptionsEnabled(true)
+  }, [captionsHook])
+
   const broadcastRoster = useCallback(() => {
     const roster = guestOrder.map((gid, idx) => ({ id: gid, name: guestNames[gid] || `Guest ${idx + 1}`, hand: !!raisedHands[gid], cohost: coHostPeerIds.has(gid) }))
     hostRTC.broadcast('annotation', { type: 'roster', guests: roster, count: guestOrder.length, queue: handQueue })
@@ -614,8 +640,18 @@ export default function HostRoom() {
       chat.handle(withSender)
       if (!chatOpen) { setUnreadCount((c) => c + 1); playChatMessage() }
     }
+    if (msg.type === 'caption' && msg.text) {
+      const withSender = {
+        ...msg,
+        from: guestNames[peerId] || msg.from || 'Guest',
+        fromPeerId: peerId,
+        id: `${peerId}-${msg.ts || Date.now()}-${Math.random()}`,
+      }
+      addCaption(withSender)
+      hostRTC.broadcast('annotation', withSender, peerId)
+    }
     handleAudioEvent(msg)
-  }, [annotation, companion, controlToken, handleAudioEvent, controlPeerId, controlSupported, hostRTC, chat, chatOpen, addJoinToast, guestNames])
+  }, [annotation, companion, controlToken, handleAudioEvent, controlPeerId, controlSupported, hostRTC, chat, chatOpen, addJoinToast, guestNames, addCaption])
 
   const { send: signalingWrite, retryCount, manualRetry, maxRetries } = useSignaling(sessionId, 'host', (msg) => {
     if (msg.type === 'admin' && msg.action === 'end') {
@@ -1533,6 +1569,7 @@ export default function HostRoom() {
           )}
 
           {guestIds.map((gid) => <RemoteAudio key={gid} stream={guestStreams[gid]} />)}
+          <CaptionsOverlay captions={captions} interimText={captionsHook.interimText} enabled={captionsEnabled || captions.length > 0} />
 
           {reactions.map((r) => (
             <div key={r.id} className="reaction-float fixed pointer-events-none z-[9990] text-2xl" style={{ bottom: 80, left: `${r.x}%` }}>{r.emoji}</div>
@@ -1601,6 +1638,25 @@ export default function HostRoom() {
                   {unreadCount > 0 && !chatOpen && (
                     <span className="absolute -top-1.5 -right-1.5 bg-red-500 text-white text-[10px] font-mono rounded-full min-w-[18px] h-[18px] flex items-center justify-center px-1 leading-none">{unreadCount > 9 ? '9+' : unreadCount}</span>
                   )}
+                </div>
+              )}
+              {flags.captions && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    onClick={toggleCaptions}
+                    disabled={!captionsHook.supported}
+                    title={captionsHook.supported ? 'Captions use your browser speech service and may send mic audio to the browser provider.' : 'Captions work best in Chrome or Edge'}
+                    className={`flex-shrink-0 px-3 py-2 rounded-lg border text-xs font-mono transition-all whitespace-nowrap ${
+                      captionsHook.listening
+                        ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                        : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-slate-100 disabled:text-slate-600 disabled:hover:text-slate-600'
+                    }`}
+                  >
+                    {captionsHook.listening ? 'Captions On' : 'Captions'}
+                  </button>
+                  <span className="max-w-[180px] text-[10px] leading-tight text-slate-500">
+                    {captionsHook.error || (captionsHook.supported ? 'Uses browser speech service.' : 'Chrome/Edge only.')}
+                  </span>
                 </div>
               )}
               <button onClick={() => setShortcutsOpen(true)} title="Keyboard shortcuts" className="flex-shrink-0 flex items-center gap-1 px-2 py-2 rounded-lg border text-xs font-mono bg-slate-900 border-slate-700 text-slate-400 hover:text-slate-200">

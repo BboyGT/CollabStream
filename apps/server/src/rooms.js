@@ -1,9 +1,10 @@
 // rooms.js — in-memory session registry
 const crypto = require('crypto')
-const { addAuditEvent, endSessionRecord } = require('./db')
+const { addAuditEvent, endSessionRecord, startSessionRecord } = require('./db')
 
 const rooms = new Map()
 const lifecycleHandlers = {
+  onSessionStart: null,
   onGuestJoin: null,
   onSessionEnd: null,
 }
@@ -20,6 +21,7 @@ const MAX_DURATION_MS = 8 * 60 * 60 * 1000
 const LOBBY_IDLE_TTL_MS = 24 * 60 * 60 * 1000
 
 function setLifecycleHandlers(handlers = {}) {
+  lifecycleHandlers.onSessionStart = typeof handlers.onSessionStart === 'function' ? handlers.onSessionStart : null
   lifecycleHandlers.onGuestJoin = typeof handlers.onGuestJoin === 'function' ? handlers.onGuestJoin : null
   lifecycleHandlers.onSessionEnd = typeof handlers.onSessionEnd === 'function' ? handlers.onSessionEnd : null
 }
@@ -32,6 +34,11 @@ function notifyGuestJoin(room, peerId) {
 function notifySessionEnd(room) {
   if (!room?.hostId || !lifecycleHandlers.onSessionEnd) return
   lifecycleHandlers.onSessionEnd(room.hostId, room.sessionId, room.sessionName).catch?.(() => {})
+}
+
+function notifySessionStart(room) {
+  if (!room?.hostId || !lifecycleHandlers.onSessionStart) return
+  lifecycleHandlers.onSessionStart(room.hostId, room.sessionId, room.sessionName).catch?.(() => {})
 }
 
 function updatePeakGuests(room) {
@@ -225,6 +232,8 @@ function startCall(sessionId) {
 
   room.started = true
   room.expiresAt = Date.now() + room.durationMinutes * 60 * 1000
+  startSessionRecord(sessionId)
+  notifySessionStart(room)
   touchRoom(sessionId)
   addAudit(sessionId, `call-started:admitted=${admitted.length},overflow=${overflow.length}`)
   return { admitted, overflow }

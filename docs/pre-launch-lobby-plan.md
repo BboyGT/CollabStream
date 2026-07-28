@@ -118,21 +118,18 @@ undermined by the gaps below.
       connected guest (not routed through a host at all, unlike every existing broadcast path).
 - [x] When the host does connect, a summary of who's been waiting (names, arrival order) so the
       "3 guests are already here" moment isn't a surprise.
-- [ ] `db.js`/`sessions` table: a `status` value for "scheduled" distinct from `active`/`ended`,
+- [x] `db.js`/`sessions` table: a `status` value for "scheduled" distinct from `active`/`ended`,
       if scheduled sessions should show up in the host's Dashboard before they've ever run.
-      **Not built this pass** — the in-memory room model (rooms.js) is the only source of truth
-      for lobby state; a host can only find their way back to a scheduled-but-not-started room
-      via the same URL/link they used to create it (no Dashboard listing yet).
+      Built with `status='scheduled'`, `host_token` persistence for owner resume, and a migration
+      that expands the status check constraint.
 
 ### Client — host side (`AppLanding.jsx`, `ScheduleModal.jsx` or a new component, `Dashboard.jsx`)
 - [x] A real "Schedule for later" path at session creation, distinct from "Start Session" now —
       creates the session, but (see the Dashboard caveat above) still enters the room — just into
       a lobby sub-state rather than a live call, instead of returning to the dashboard/homepage.
-      This is a deliberate scope trim from the original idea below: without a Dashboard listing
-      (not built this pass), there'd be no other way to *get back* to a scheduled session, so
-      entering the lobby immediately is the only viable flow for now.
-- [ ] Somewhere to find and open a previously-scheduled-but-not-yet-started session again —
-      **not built this pass**, depends on the Dashboard/db.js work above.
+      The Dashboard now also lists scheduled sessions, so the host can leave and reopen one later.
+- [x] Somewhere to find and open a previously-scheduled-but-not-yet-started session again -
+      Dashboard now labels scheduled sessions and shows an Open action for the owning host.
 - [x] `HostRoom.jsx` needs a "lobby" sub-state distinct from the live call — showing who's
       waiting and letting the host chat with them before clicking a real "Start call" action.
 
@@ -163,12 +160,8 @@ undermined by the gaps below.
   through the signaling WebSocket instead, broadcasting directly to every currently-connected
   lobby guest plus the host (if present). Deliberately has no per-sender rate limit yet (unlike
   waiting-room chat's 5/min) — flagged as a simplification in the code, not an oversight.
-- Scope trim, not a bug: without a Dashboard listing or `db.js` schema for scheduled sessions
-  (both explicitly left unbuilt this pass), "Schedule for later" still enters the lobby
-  immediately rather than returning the host to the homepage. The host can leave and come back
-  using the same URL, but there's no *browsable* list of their scheduled-but-not-started sessions
-  yet. Worth a follow-up pass if "schedule days ahead, forget the tab, come back later" is a real
-  use case rather than "create it now and wait in the lobby for guests to trickle in."
+- Dashboard persistence is now built: scheduled sessions are stored as `status='scheduled'`,
+  show in the host dashboard, and can be reopened by the owner via the stored host resume token.
 - Server-side covered by `test/rooms.test.js` and `test/relay.test.js` (lobby join/uncapped/no-
   approval-mode, `startCall`'s cap-and-overflow split, `expiresAt` recomputation, the host-
   disconnect-doesn't-delete-a-lobby guard, the 24-hour lobby idle exemption, lobby-chat broadcast

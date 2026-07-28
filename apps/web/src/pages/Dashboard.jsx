@@ -45,10 +45,31 @@ function formatDate(iso) {
 }
 
 function sessionDuration(session) {
+  if (session.status === 'scheduled') return 0
   if (session.ended_at && session.started_at) {
     return Math.max(1, Math.round((new Date(session.ended_at) - new Date(session.started_at)) / 60000))
   }
   return session.duration_minutes || 0
+}
+
+function sessionStatusMeta(session) {
+  if (session.status === 'scheduled') {
+    return {
+      label: 'Scheduled',
+      tone: 'border-amber-700 bg-amber-950/40 text-amber-300',
+      durationLabel: 'Waiting',
+      live: false,
+      scheduled: true,
+    }
+  }
+  const live = session.status === 'active' && !session.ended_at
+  return {
+    label: live ? 'Live' : 'Ended',
+    tone: live ? 'border-emerald-700 bg-emerald-950/40 text-emerald-300' : 'border-slate-700 bg-slate-950 text-slate-400',
+    durationLabel: live ? 'Live' : formatDuration(sessionDuration(session)),
+    live,
+    scheduled: false,
+  }
 }
 
 function StatCard({ label, value, sub, accent = 'text-slate-100' }) {
@@ -102,6 +123,8 @@ export default function Dashboard() {
   const [page, setPage] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [error, setError] = useState(null)
+  const [analytics, setAnalytics] = useState(null)
+  const [analyticsLoading, setAnalyticsLoading] = useState(false)
 
   const fetchData = useCallback(async (p = 0) => {
     setLoading(true)
@@ -165,10 +188,25 @@ export default function Dashboard() {
     window.open(url, '_blank')
   }
 
+  async function loadAnalytics(session) {
+    const token = await getToken()
+    if (!token) return
+    setAnalyticsLoading(true)
+    try {
+      const res = await fetch(apiUrl(`/api/sessions/${session.id}/analytics`), { headers: { Authorization: `Bearer ${token}` } })
+      if (!res.ok) return
+      const data = await res.json()
+      setAnalytics({ session, ...(data.analytics || {}) })
+    } finally {
+      setAnalyticsLoading(false)
+    }
+  }
+
   const isFree = plan === 'free'
   const isBusiness = plan === 'business'
   const meta = PLAN_META[plan] || PLAN_META.free
-  const activeSessions = sessions.filter((s) => s.status === 'active' || !s.ended_at).length
+  const activeSessions = sessions.filter((s) => s.status === 'active' && !s.ended_at).length
+  const scheduledSessions = sessions.filter((s) => s.status === 'scheduled').length
   const averageMinutes = stats?.totalSessions ? Math.round((stats.totalMinutes || 0) / stats.totalSessions) : 0
   const latestSession = sessions[0]
 
@@ -225,7 +263,7 @@ export default function Dashboard() {
               </div>
             ) : (
               <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
-                <StatCard label="Sessions" value={stats?.totalSessions || 0} sub={`${activeSessions} active on this page`} />
+                <StatCard label="Sessions" value={stats?.totalSessions || 0} sub={`${activeSessions} active, ${scheduledSessions} scheduled`} />
                 <StatCard label="Guests" value={stats?.totalGuests || 0} sub="Peak total" />
                 <StatCard label="Hosted time" value={formatDuration(stats?.totalMinutes || 0)} sub={`${formatDuration(averageMinutes)} average`} />
                 <StatCard label="Recordings" value={stats?.recordingsSaved || 0} sub={isBusiness ? 'Cloud saved' : 'Business only'} accent={isBusiness ? 'text-amber-200' : 'text-slate-100'} />
@@ -267,12 +305,35 @@ export default function Dashboard() {
               <div>
                 <div className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Latest session</div>
                 <div className="mt-1 font-mono text-sm text-slate-200">{latestSession.session_name || 'Unnamed session'}</div>
-                <div className="mt-1 text-xs text-slate-500">{formatDate(latestSession.started_at)} - {formatDuration(sessionDuration(latestSession))} - {latestSession.peak_guests || 0} peak guests</div>
+                <div className="mt-1 text-xs text-slate-500">{formatDate(latestSession.started_at)} - {sessionStatusMeta(latestSession).durationLabel} - {latestSession.peak_guests || 0} peak guests</div>
               </div>
               <div className="flex gap-2">
                 <ActionButton onClick={() => downloadAudit(latestSession.id)}>Audit JSON</ActionButton>
                 <ActionButton onClick={() => navigate('/app')} primary>Start another</ActionButton>
               </div>
+            </div>
+          </section>
+        )}
+
+        {!isFree && analytics && (
+          <section className="mb-6 rounded-xl border border-slate-800 bg-slate-900/35 px-5 py-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <div className="text-[10px] font-mono uppercase tracking-widest text-slate-500">Meeting analytics</div>
+                <div className="mt-1 font-mono text-sm text-slate-200">{analytics.session?.session_name || 'Unnamed session'}</div>
+                <div className="mt-1 text-xs text-slate-500">Floor time: {formatDuration(Math.ceil((analytics.totalFloorSeconds || 0) / 60))}</div>
+              </div>
+              <ActionButton onClick={() => setAnalytics(null)}>Close</ActionButton>
+            </div>
+            <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {(analytics.talkTime || []).length === 0 ? (
+                <div className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-3 text-xs text-slate-500">No floor-mode talk time recorded for this session.</div>
+              ) : analytics.talkTime.map((item) => (
+                <div key={item.peerId} className="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-3">
+                  <div className="truncate font-mono text-xs text-slate-300">{item.peerId}</div>
+                  <div className="mt-1 text-sm font-semibold text-cyan-200">{formatDuration(Math.ceil(item.seconds / 60))}</div>
+                </div>
+              ))}
             </div>
           </section>
         )}
@@ -323,7 +384,7 @@ export default function Dashboard() {
                 </thead>
                 <tbody>
                   {sessions.map((session) => {
-                    const live = session.status === 'active' || !session.ended_at
+                    const status = sessionStatusMeta(session)
                     return (
                       <tr key={session.id} className="border-b border-slate-800/50 transition-colors hover:bg-slate-900/45">
                         <td className="px-5 py-4">
@@ -331,15 +392,17 @@ export default function Dashboard() {
                           <div className="mt-1 font-mono text-[10px] text-slate-600">{session.id}</div>
                         </td>
                         <td className="whitespace-nowrap px-5 py-4 text-slate-400">{formatDate(session.started_at)}</td>
-                        <td className="whitespace-nowrap px-5 py-4 text-right font-mono text-slate-300">{live ? 'Live' : formatDuration(sessionDuration(session))}</td>
+                        <td className="whitespace-nowrap px-5 py-4 text-right font-mono text-slate-300">{status.durationLabel}</td>
                         <td className="px-5 py-4 text-right font-mono text-slate-300">{session.peak_guests ?? 0}</td>
                         <td className="px-5 py-4 text-center">
-                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest ${live ? 'border-emerald-700 bg-emerald-950/40 text-emerald-300' : 'border-slate-700 bg-slate-950 text-slate-400'}`}>
-                            {live ? 'Live' : 'Ended'}
+                          <span className={`rounded-full border px-2 py-0.5 text-[10px] font-mono uppercase tracking-widest ${status.tone}`}>
+                            {status.label}
                           </span>
                         </td>
                         <td className="px-5 py-4">
                           <div className="flex justify-end gap-2">
+                            {status.scheduled && session.host_token && <ActionButton onClick={() => navigate(`/room/${session.id}/host?token=${encodeURIComponent(session.host_token)}`)} primary>Open</ActionButton>}
+                            <ActionButton onClick={() => loadAnalytics(session)} disabled={analyticsLoading}>Analytics</ActionButton>
                             {session.recording_url && isBusiness && <ActionButton onClick={() => openRecording(session.id)}>Recording</ActionButton>}
                             <ActionButton onClick={() => downloadAudit(session.id)}>Audit</ActionButton>
                           </div>

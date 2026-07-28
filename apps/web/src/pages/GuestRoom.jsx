@@ -8,6 +8,7 @@ import useAudio from '../hooks/useAudio.js'
 import useAnnotation from '../hooks/useAnnotation.js'
 import useControl from '../hooks/useControl.js'
 import useChat from '../hooks/useChat.js'
+import useCaptions from '../hooks/useCaptions.js'
 import ScreenView from '../components/ScreenView.jsx'
 import VideoFeed from '../components/VideoFeed.jsx'
 import VideoTile from '../components/VideoTile.jsx'
@@ -15,6 +16,7 @@ import ModeBadge from '../components/ModeBadge.jsx'
 import AnnotationToolbar from '../components/AnnotationToolbar.jsx'
 import AudioControls from '../components/AudioControls.jsx'
 import RemoteAudio from '../components/RemoteAudio.jsx'
+import CaptionsOverlay from '../components/CaptionsOverlay.jsx'
 import ChatPanel from '../components/ChatPanel.jsx'
 import WhiteboardToolbar from '../components/WhiteboardToolbar.jsx'
 import { verifySession } from '../lib/session.js'
@@ -123,6 +125,8 @@ export default function GuestRoom() {
   const [chatOpen, setChatOpen] = useState(false)
   const [chatDock, setChatDock] = useState(() => { try { return localStorage.getItem('cs_chat_dock') || 'floating' } catch { return 'floating' } })
   const [unreadCount, setUnreadCount] = useState(0)
+  const [captionsEnabled, setCaptionsEnabled] = useState(false)
+  const [captions, setCaptions] = useState([])
 
   // Focus mode
   const [focusMode, setFocusMode] = useState(false)
@@ -319,6 +323,28 @@ export default function GuestRoom() {
   const { takeSnapshot } = useSnapshot(videoRef, canvasRef)
   const chat = useChat(sendData, 'guest')
 
+  const addCaption = useCallback((caption) => {
+    const id = caption.id || `${Date.now()}-${Math.random()}`
+    setCaptions((items) => [...items.slice(-5), { id, ts: Date.now(), ...caption }])
+    setTimeout(() => setCaptions((items) => items.filter((item) => item.id !== id)), 8000)
+  }, [])
+
+  const captionsHook = useCaptions(useCallback((text) => {
+    const msg = { type: 'caption', text, from: name || 'Guest', fromPeerId: peerId, ts: Date.now() }
+    addCaption({ ...msg, from: 'You' })
+    sendData('annotation', msg)
+  }, [addCaption, name, peerId, sendData]))
+
+  const toggleCaptions = useCallback(() => {
+    if (captionsHook.listening) {
+      captionsHook.stop()
+      setCaptionsEnabled(false)
+      return
+    }
+    const started = captionsHook.start()
+    if (started) setCaptionsEnabled(true)
+  }, [captionsHook])
+
   const onCursorMove = useCallback((e) => {
     if (mode !== 'annotate') return
     const vid = videoRef.current; if (!vid) return
@@ -448,8 +474,15 @@ export default function GuestRoom() {
       chat.handle(msg)
       if (!chatOpen) { setUnreadCount((c) => c + 1); playChatMessage() }
     }
+    if (msg.type === 'caption' && msg.text) {
+      addCaption({
+        ...msg,
+        from: msg.fromPeerId === 'host' ? 'Host' : (msg.from || 'Guest'),
+        id: `${msg.fromPeerId || 'peer'}-${msg.ts || Date.now()}-${Math.random()}`,
+      })
+    }
     handleAudioEvent(msg)
-  }, [annotation, setControlGranted, setControlToken, setMode, handleAudioEvent, navigate, chat, chatOpen, setRemoteScreenStreamId, setRemoteScreenStream, shareQuality, stopLocalMedia, peerId])
+  }, [annotation, setControlGranted, setControlToken, setMode, handleAudioEvent, navigate, chat, chatOpen, setRemoteScreenStreamId, setRemoteScreenStream, shareQuality, stopLocalMedia, peerId, addCaption])
 
   const { handleSignal, setSignalSend, getStats, addScreenTrack, renegotiate, prepareFloorAudio, clearFloorAudio } = useWebRTC({
     role: 'guest', localStream, screenStream,
@@ -1042,6 +1075,7 @@ export default function GuestRoom() {
 
           <RemoteAudio stream={remoteStream} />
           <RemoteAudio stream={remoteFloorAudioStream} />
+          <CaptionsOverlay captions={captions} interimText={captionsHook.interimText} enabled={captionsEnabled || captions.length > 0} />
 
           {reactions.map((r) => (
             <div key={r.id} className="reaction-float fixed pointer-events-none z-[9990] text-2xl" style={{ bottom: 80, left: `${r.x}%` }}>{r.emoji}</div>
@@ -1095,6 +1129,25 @@ export default function GuestRoom() {
                       {unreadCount > 9 ? '9+' : unreadCount}
                     </span>
                   )}
+                </div>
+              )}
+              {flags.captions && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    onClick={toggleCaptions}
+                    disabled={!captionsHook.supported}
+                    title={captionsHook.supported ? 'Captions use your browser speech service and may send mic audio to the browser provider.' : 'Captions work best in Chrome or Edge'}
+                    className={`flex-shrink-0 px-3 py-2 rounded-lg border text-xs font-mono transition-all whitespace-nowrap ${
+                      captionsHook.listening
+                        ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                        : 'bg-slate-900 border-slate-700 text-slate-300 hover:text-slate-100 disabled:text-slate-600 disabled:hover:text-slate-600'
+                    }`}
+                  >
+                    {captionsHook.listening ? 'Captions On' : 'Captions'}
+                  </button>
+                  <span className="max-w-[180px] text-[10px] leading-tight text-slate-500">
+                    {captionsHook.error || (captionsHook.supported ? 'Uses browser speech service.' : 'Chrome/Edge only.')}
+                  </span>
                 </div>
               )}
               <div className="flex items-center gap-1 flex-shrink-0">

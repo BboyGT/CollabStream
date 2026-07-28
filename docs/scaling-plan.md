@@ -1,7 +1,8 @@
 # Scaling plan: beyond a single signaling-server instance
 
-**Status: planning document, not implemented.** This is deliberately a design/runbook, not
-code — see AUDIT.md §2.1 and the "Scaling" checklist item. Rewriting `rooms.js`'s in-memory
+**Status: Option A support built; Redis externalization remains planning-only.** The web and
+mobile clients now include `sessionId` in the WebSocket URL query so a load balancer can apply
+session affinity/consistent hashing by room. Rewriting `rooms.js`'s in-memory
 `Map` into a distributed store is real surgery on the most security-sensitive code in this
 repo (session tokens, guest admission, IP bans), and doing that without a Redis instance to
 actually test against would be worse than not doing it at all. This document exists so that
@@ -47,6 +48,10 @@ horizontal scaling (different *rooms* on different instances) with zero applicat
 changes. This is very likely sufficient for a long time — reach for Option B only once
 sticky sessions themselves become the bottleneck (e.g. wildly uneven load because a handful
 of huge rooms land on one instance) or you need restart-survivability.
+
+**Implemented support:** `useSignaling.js` and the mobile room client append
+`?sessionId=<id>` to `/ws`. The server still authenticates by the existing register message; the
+query parameter is only a load-balancer routing hint.
 
 ### Option B: Externalize room state (Redis or equivalent) — the real fix
 This is the actual distributed-systems version. Rough shape:

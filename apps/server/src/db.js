@@ -5,19 +5,29 @@ const { supabase } = require('./supabase')
 
 async function createSessionRecord(sessionId, hostId, opts = {}) {
   if (!supabase) return
-  const { sessionName, joinCode, shortCode, joinMode, maxGuests, durationMinutes } = opts
+  const { sessionName, joinCode, shortCode, joinMode, maxGuests, durationMinutes, scheduled, hostToken } = opts
   const { error } = await supabase.from('sessions').insert({
     id: sessionId,
     host_id: hostId || null,
+    host_token: hostToken || null,
     session_name: sessionName || null,
     join_code: joinCode || null,
     short_code: shortCode || null,
     join_mode: joinMode || 'open',
     max_guests: maxGuests || null,
     duration_minutes: durationMinutes || 120,
-    status: 'active',
+    status: scheduled ? 'scheduled' : 'active',
   })
   if (error) console.error('[db] createSessionRecord error:', error.message)
+}
+
+async function startSessionRecord(sessionId) {
+  if (!supabase) return
+  const { error } = await supabase
+    .from('sessions')
+    .update({ status: 'active', started_at: new Date().toISOString() })
+    .eq('id', sessionId)
+  if (error) console.error('[db] startSessionRecord error:', error.message)
 }
 
 async function endSessionRecord(sessionId, peakGuests = 0) {
@@ -63,6 +73,48 @@ async function getAuditTrail(sessionId) {
     .order('created_at', { ascending: true })
   if (error) console.error('[db] getAuditTrail error:', error.message)
   return data || []
+}
+
+async function getSessionAnalytics(sessionId, hostId) {
+  if (!supabase) return { talkTime: [], totalFloorSeconds: 0 }
+  const { data: session, error: sessionError } = await supabase
+    .from('sessions')
+    .select('id, host_id, ended_at')
+    .eq('id', sessionId)
+    .single()
+  if (sessionError || !session || session.host_id !== hostId) return null
+
+  const events = await getAuditTrail(sessionId)
+  const totals = new Map()
+  let active = null
+
+  for (const event of events) {
+    const type = event.event_type || ''
+    const at = new Date(event.created_at).getTime()
+    if (type.startsWith('floor-granted:')) {
+      if (active) {
+        totals.set(active.peerId, (totals.get(active.peerId) || 0) + Math.max(0, Math.round((at - active.startedAt) / 1000)))
+      }
+      active = { peerId: type.slice('floor-granted:'.length), startedAt: at }
+    } else if (type === 'floor-revoked' && active) {
+      totals.set(active.peerId, (totals.get(active.peerId) || 0) + Math.max(0, Math.round((at - active.startedAt) / 1000)))
+      active = null
+    }
+  }
+
+  if (active) {
+    const endAt = session.ended_at ? new Date(session.ended_at).getTime() : Date.now()
+    totals.set(active.peerId, (totals.get(active.peerId) || 0) + Math.max(0, Math.round((endAt - active.startedAt) / 1000)))
+  }
+
+  const talkTime = Array.from(totals.entries())
+    .map(([peerId, seconds]) => ({ peerId, seconds }))
+    .sort((a, b) => b.seconds - a.seconds)
+
+  return {
+    talkTime,
+    totalFloorSeconds: talkTime.reduce((sum, item) => sum + item.seconds, 0),
+  }
 }
 
 async function getDashboardStats(hostId) {
@@ -161,10 +213,12 @@ async function getWebhookDeliveries(webhookId, hostId, limit = 50) {
 
 module.exports = {
   createSessionRecord,
+  startSessionRecord,
   endSessionRecord,
   addAuditEvent,
   listSessionHistory,
   getAuditTrail,
+  getSessionAnalytics,
   getDashboardStats,
   pruneOldData,
   getStats,
