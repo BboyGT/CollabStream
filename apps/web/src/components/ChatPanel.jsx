@@ -135,8 +135,9 @@ function groupMessages(messages) {
   let cur = null
   messages.forEach((msg, idx) => {
     const sender = msg.from || (msg.type === 'file' ? msg.from : 'unknown')
-    if (!cur || cur.from !== sender) {
-      cur = { from: sender, messages: [], startIdx: idx }
+    const senderRole = msg.fromRole || msg.from
+    if (!cur || cur.from !== sender || cur.fromRole !== senderRole) {
+      cur = { from: sender, fromRole: senderRole, messages: [], startIdx: idx }
       groups.push(cur)
     }
     cur.messages.push({ ...msg, _id: idx })
@@ -350,7 +351,7 @@ export default function ChatPanel({
             <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
               {groups.length === 0 && <p style={{ fontSize: 11, color: 'rgba(100,116,139,1)', fontFamily: 'monospace', textAlign: 'center', paddingTop: 24 }}>No messages yet</p>}
               {groups.map((g, gi) => (
-                <MessageGroup key={gi} messages={g.messages} isOwn={g.from === myRole} unreadIndex={unreadGroupIdx} groupIndex={gi} />
+                <MessageGroup key={gi} messages={g.messages} isOwn={g.fromRole === myRole} unreadIndex={unreadGroupIdx} groupIndex={gi} />
               ))}
               <div ref={bottomRef} />
             </div>
@@ -382,7 +383,7 @@ export default function ChatPanel({
           <div style={{ flex: 1, overflowY: 'auto', padding: '8px 12px' }}>
             {groups.length === 0 && <p style={{ fontSize: 11, color: 'rgba(100,116,139,1)', fontFamily: 'monospace', textAlign: 'center', paddingTop: 24 }}>No messages yet</p>}
             {groups.map((g, gi) => (
-              <MessageGroup key={gi} messages={g.messages} isOwn={g.from === myRole} unreadIndex={unreadGroupIdx} groupIndex={gi} />
+              <MessageGroup key={gi} messages={g.messages} isOwn={g.fromRole === myRole} unreadIndex={unreadGroupIdx} groupIndex={gi} />
             ))}
             <div ref={bottomRef} />
           </div>

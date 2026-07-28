@@ -22,7 +22,7 @@ function nextTick() {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-export default function useChat(sendData, role) {
+export default function useChat(sendData, role, displayName) {
   const [messages, setMessages] = useState([])
   // Keyed by a per-transfer id, NOT filename — two people sending files
   // with the same name at the same time used to corrupt both transfers,
@@ -34,10 +34,10 @@ export default function useChat(sendData, role) {
     // broadcasting — see HostRoom.jsx's chatDispatch. Included on the
     // message itself too, so ChatPanel can show "→ private" on the
     // sender's own copy.
-    const msg = { type: 'chat', text, from: role, ts: Date.now(), target }
+    const msg = { type: 'chat', text, from: displayName || (role === 'host' ? 'Host' : 'Guest'), fromRole: role, ts: Date.now(), target }
     setMessages((m) => [...m, msg])
     sendData?.('annotation', msg, target)
-  }, [sendData, role])
+  }, [sendData, role, displayName])
 
   const sendFile = useCallback(async (file, target = 'all') => {
     if (file.size > MAX_FILE_SIZE) {
@@ -61,7 +61,8 @@ export default function useChat(sendData, role) {
       size: file.size,
       mimeType: file.type,
       totalChunks,
-      from: role,
+      from: displayName || (role === 'host' ? 'Host' : 'Guest'),
+      fromRole: role,
     }, target)
 
     for (let i = 0; i < totalChunks; i++) {
@@ -76,14 +77,14 @@ export default function useChat(sendData, role) {
       if (i > 0 && i % YIELD_EVERY_N_CHUNKS === 0) await nextTick()
     }
 
-    sendData?.('annotation', { type: 'file-end', transferId, from: role }, target)
+    sendData?.('annotation', { type: 'file-end', transferId, from: displayName || (role === 'host' ? 'Host' : 'Guest'), fromRole: role }, target)
 
     // Add outgoing file to own messages immediately
     const url = URL.createObjectURL(file)
     setMessages((m) => [...m, {
-      type: 'file', name: file.name, url, size: file.size, from: role, ts: Date.now(), target,
+      type: 'file', name: file.name, url, size: file.size, from: displayName || (role === 'host' ? 'Host' : 'Guest'), fromRole: role, ts: Date.now(), target,
     }])
-  }, [sendData, role])
+  }, [sendData, role, displayName])
 
   const handle = useCallback((msg) => {
     if (msg.type === 'chat') {
@@ -99,6 +100,7 @@ export default function useChat(sendData, role) {
         size: msg.size,
         name: msg.name,
         from: msg.from,
+        fromRole: msg.fromRole,
       }
       return
     }
@@ -128,7 +130,7 @@ export default function useChat(sendData, role) {
         setMessages((m) => [...m, {
           type: 'chat',
           text: `\u26a0 "${buf.name}" failed to transfer completely and was discarded.`,
-          from: buf.from, ts: Date.now(),
+          from: buf.from, fromRole: buf.fromRole, ts: Date.now(),
         }])
         return
       }
@@ -141,14 +143,14 @@ export default function useChat(sendData, role) {
         const blob = new Blob(binary, { type: buf.mimeType || 'application/octet-stream' })
         const url = URL.createObjectURL(blob)
         setMessages((m) => [...m, {
-          type: 'file', name: buf.name, url, size: buf.size, from: buf.from, ts: Date.now(),
+          type: 'file', name: buf.name, url, size: buf.size, from: buf.from, fromRole: buf.fromRole, ts: Date.now(),
         }])
       } catch (e) {
         console.warn('File reassembly failed', e)
         setMessages((m) => [...m, {
           type: 'chat',
           text: `\u26a0 "${buf.name}" failed to transfer completely and was discarded.`,
-          from: buf.from, ts: Date.now(),
+          from: buf.from, fromRole: buf.fromRole, ts: Date.now(),
         }])
       }
     }

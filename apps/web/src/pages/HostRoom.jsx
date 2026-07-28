@@ -169,6 +169,7 @@ export default function HostRoom() {
   const [newBoardName, setNewBoardName] = useState('')
   const [boardSaving, setBoardSaving] = useState(false)
   const [textInput, setTextInput] = useState(null)
+  const textInputRef = useRef(null)
   const [controlSupported, setControlSupported] = useState(true)
   const [mediaError, setMediaError] = useState(null)
   const [pendingControlPeerId, setPendingControlPeerId] = useState(null)
@@ -514,7 +515,7 @@ export default function HostRoom() {
   const { toggleMute, handleAudioEvent } = useAudio(sendAll)
   const annotation = useAnnotation(canvasRef, pointerRef, sendAll, 'host')
   const { takeSnapshot } = useSnapshot(videoRef, canvasRef)
-  const chat = useChat(chatDispatch, 'host')
+  const chat = useChat(chatDispatch, 'host', 'Host')
 
   const addCaption = useCallback((caption) => {
     const id = caption.id || `${Date.now()}-${Math.random()}`
@@ -568,6 +569,14 @@ export default function HostRoom() {
     annotation.addTextStamp(textInput.x, textInput.y, value, annotationColor, wbStrokeWidth)
     setTextInput(null)
   }
+
+  useEffect(() => {
+    if (!textInput) return
+    requestAnimationFrame(() => {
+      textInputRef.current?.focus()
+      textInputRef.current?.select()
+    })
+  }, [textInput])
 
   const handleDataMessage = useCallback((msg, peerId) => {
     if (msg.type === 'draw' || msg.type === 'clear' || msg.type === 'stroke' || msg.type === 'laser' || msg.type === 'undo') {
@@ -635,7 +644,7 @@ export default function HostRoom() {
       // final message reuses the name captured off file-start in
       // useChat.js's fileBuffers), so only those two are rewritten.
       const withSender = (msg.type === 'chat' || msg.type === 'file-start')
-        ? { ...msg, from: guestNames[peerId] || 'Guest' }
+        ? { ...msg, from: guestNames[peerId] || 'Guest', fromRole: 'guest' }
         : msg
       chat.handle(withSender)
       if (!chatOpen) { setUnreadCount((c) => c + 1); playChatMessage() }
@@ -963,7 +972,7 @@ export default function HostRoom() {
       const canvas = canvasRef.current; if (!canvas) return
       const rect = canvas.getBoundingClientRect()
       const px = e.clientX - rect.left; const py = e.clientY - rect.top
-      setTextInput({ x: px / rect.width, y: py / rect.height, px, py })
+      setTextInput({ x: px / rect.width, y: py / rect.height, px, py, value: '' })
       return
     }
     annotation.onPointerDown(e)
@@ -1494,14 +1503,18 @@ export default function HostRoom() {
               />
               {textInput && (
                 <input
-                  autoFocus
+                  ref={textInputRef}
+                  value={textInput.value}
                   style={{
                     position: 'absolute', left: textInput.px, top: textInput.py,
-                    background: 'transparent', border: 'none',
+                    background: 'rgba(2,6,15,0.75)', border: 'none',
                     borderBottom: `2px solid ${annotationColor}`, outline: 'none',
                     fontSize: `${16 * (wbStrokeWidth || 3) / 3}px`, color: annotationColor,
-                    fontFamily: 'monospace', minWidth: 80, zIndex: 30,
+                    fontFamily: 'monospace', minWidth: 120, zIndex: 30,
+                    padding: '3px 5px', borderRadius: 4,
                   }}
+                  placeholder="Type text"
+                  onChange={(e) => setTextInput((current) => current ? { ...current, value: e.target.value } : current)}
                   onBlur={(e) => commitText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') commitText(e.target.value); if (e.key === 'Escape') setTextInput(null) }}
                 />

@@ -86,6 +86,7 @@ export default function GuestRoom() {
   const [whiteboard, setWhiteboard] = useState(false)
   const [wbStrokeWidth, setWbStrokeWidth] = useState(3)
   const [textInput, setTextInput] = useState(null)
+  const textInputRef = useRef(null)
   const [reactions, setReactions] = useState([])
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [helpOpen, setHelpOpen] = useState(false)
@@ -321,7 +322,7 @@ export default function GuestRoom() {
   const annotation = useAnnotation(canvasRef, pointerRef, sendData, 'guest')
   const control = useControl(videoRef, sendData)
   const { takeSnapshot } = useSnapshot(videoRef, canvasRef)
-  const chat = useChat(sendData, 'guest')
+  const chat = useChat(sendData, 'guest', name || 'Guest')
 
   const addCaption = useCallback((caption) => {
     const id = caption.id || `${Date.now()}-${Math.random()}`
@@ -393,6 +394,14 @@ export default function GuestRoom() {
     setTextInput(null)
   }
 
+  useEffect(() => {
+    if (!textInput) return
+    requestAnimationFrame(() => {
+      textInputRef.current?.focus()
+      textInputRef.current?.select()
+    })
+  }, [textInput])
+
   function onWbPointerDown(e) {
     if (annotationTool === 'text' && mode === 'annotate') {
       const canvas = canvasRef.current
@@ -400,7 +409,7 @@ export default function GuestRoom() {
       const rect = canvas.getBoundingClientRect()
       const px = e.clientX - rect.left
       const py = e.clientY - rect.top
-      setTextInput({ x: px / rect.width, y: py / rect.height, px, py })
+      setTextInput({ x: px / rect.width, y: py / rect.height, px, py, value: '' })
       return
     }
     annotation.onPointerDown(e)
@@ -1022,21 +1031,26 @@ export default function GuestRoom() {
               />
               {textInput && (
                 <input
-                  autoFocus
+                  ref={textInputRef}
+                  value={textInput.value}
                   style={{
                     position: 'absolute',
                     left: textInput.px,
                     top: textInput.py,
-                    background: 'transparent',
+                    background: 'rgba(2,6,15,0.75)',
                     border: 'none',
                     borderBottom: `2px solid ${annotationColor}`,
                     outline: 'none',
                     fontSize: `${16 * (wbStrokeWidth || 3) / 3}px`,
                     color: annotationColor,
                     fontFamily: 'monospace',
-                    minWidth: 80,
+                    minWidth: 120,
                     zIndex: 30,
+                    padding: '3px 5px',
+                    borderRadius: 4,
                   }}
+                  placeholder="Type text"
+                  onChange={(e) => setTextInput((current) => current ? { ...current, value: e.target.value } : current)}
                   onBlur={(e) => commitText(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') commitText(e.target.value); if (e.key === 'Escape') setTextInput(null) }}
                 />

@@ -14,6 +14,30 @@ const PLAN_LIMITS = {
 
 const WEBHOOK_EVENTS = ['session.start', 'session.end', 'guest.join', 'recording.ready']
 
+const PLAN_DETAILS = [
+  {
+    id: 'free',
+    name: 'Free',
+    price: '$0',
+    position: 'Try CollabStream and host small, quick sessions.',
+    features: ['3 guests', '45 minute sessions', 'Live screen share', 'Whiteboard and chat'],
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    price: '$5/mo',
+    position: 'Best value for creators, tutors, freelancers, and support calls.',
+    features: ['10 guests', '8 hour sessions', 'Local recording', 'Dashboard, audit logs, analytics'],
+  },
+  {
+    id: 'business',
+    name: 'Business',
+    price: '$15/mo',
+    position: 'For teams that need a branded, automated customer workflow.',
+    features: ['20 guests', 'Cloud recordings', 'Custom branding', 'Webhooks and saved whiteboards'],
+  },
+]
+
 export default function Settings() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
@@ -226,26 +250,36 @@ export default function Settings() {
           <div className="text-xs font-mono text-slate-500 mb-5">
             {limits.label} &mdash; Up to {limits.guests} guests &middot; {limits.duration} sessions
           </div>
-          {!isPro && (
-            <div className="grid sm:grid-cols-2 gap-3 mb-4">
-              <div className="border border-slate-700 rounded-xl p-4">
-                <div className="font-mono font-semibold text-slate-200 mb-1">Pro</div>
-                <div className="text-slate-400 text-xs mb-3">10 guests &middot; 8h sessions &middot; recording history</div>
-                <button onClick={() => handleUpgrade(import.meta.env.VITE_STRIPE_PRO_PRICE_ID)}
-                  className="w-full py-2 bg-cyan-500 hover:bg-cyan-400 text-zinc-900 rounded-lg text-xs font-mono font-semibold transition-all">
-                  Upgrade &mdash; $5/mo
-                </button>
-              </div>
-              <div className="border border-amber-800/50 bg-amber-950/10 rounded-xl p-4">
-                <div className="font-mono font-semibold text-amber-200 mb-1">Business</div>
-                <div className="text-slate-400 text-xs mb-3">20 guests &middot; cloud recording &middot; branding &middot; webhooks</div>
-                <button onClick={() => handleUpgrade(import.meta.env.VITE_STRIPE_BUSINESS_PRICE_ID)}
-                  className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-zinc-900 rounded-lg text-xs font-mono font-semibold transition-all">
-                  Upgrade &mdash; $15/mo
-                </button>
-              </div>
-            </div>
-          )}
+          <div className="grid md:grid-cols-3 gap-3 mb-4">
+            {PLAN_DETAILS.map((tier) => {
+              const active = plan === tier.id
+              const canUpgrade = tier.id !== 'free' && plan !== tier.id && !(plan === 'business' && tier.id === 'pro')
+              const priceId = tier.id === 'business' ? import.meta.env.VITE_STRIPE_BUSINESS_PRICE_ID : import.meta.env.VITE_STRIPE_PRO_PRICE_ID
+              return (
+                <div key={tier.id} className={`border rounded-xl p-4 ${active ? 'border-cyan-500 bg-cyan-950/10' : tier.id === 'business' ? 'border-amber-800/50 bg-amber-950/10' : 'border-slate-700'}`}>
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div>
+                      <div className={`font-mono font-semibold ${tier.id === 'business' ? 'text-amber-200' : 'text-slate-200'}`}>{tier.name}</div>
+                      <div className="text-slate-500 text-xs font-mono">{tier.price}</div>
+                    </div>
+                    {active && <span className="text-[10px] font-mono text-cyan-200 border border-cyan-700 rounded-full px-2 py-0.5">Current</span>}
+                  </div>
+                  <div className="text-slate-400 text-xs mb-3 min-h-[48px]">{tier.position}</div>
+                  <div className="space-y-1.5 mb-4">
+                    {tier.features.map((feature) => (
+                      <div key={feature} className="text-[11px] font-mono text-slate-300">OK {feature}</div>
+                    ))}
+                  </div>
+                  {canUpgrade && (
+                    <button onClick={() => handleUpgrade(priceId)}
+                      className={`w-full py-2 rounded-lg text-xs font-mono font-semibold transition-all ${tier.id === 'business' ? 'bg-amber-500 hover:bg-amber-400 text-zinc-900' : 'bg-cyan-500 hover:bg-cyan-400 text-zinc-900'}`}>
+                      Upgrade to {tier.name}
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
           {isPro && (
             <button onClick={handleManageBilling}
               className="px-4 py-2 bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-mono transition-colors">
